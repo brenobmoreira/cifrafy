@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="pt-BR" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cifrafy — Spotify & Cifra Club</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background-color: #0b0f19; color: #e2e8f0; font-family: system-ui, -apple-system, sans-serif; }
+    .chord-badge { background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.4); color: #34d399; }
+    .barre-badge { background: rgba(244, 63, 94, 0.15); border: 1px solid rgba(244, 63, 94, 0.4); color: #fb7185; }
+    .unknown-badge { background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); color: #fbbf24; }
+    pre.cifra-sheet b { color: #fb923c; font-weight: 700; }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+  <header class="border-b border-slate-800 bg-slate-900/70 backdrop-blur sticky top-0 z-20">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <span class="text-2xl">🎸</span>
+        <div>
+          <h1 class="text-lg font-bold text-white tracking-tight">Cifrafy</h1>
+          <p class="text-xs text-slate-400">REST API (<code id="api-url-label" class="text-emerald-400"></code>) + MCP em <code class="text-indigo-400">/mcp</code></p>
+        </div>
+      </div>
+      <div class="flex items-center gap-3 text-xs">
+        <span id="status-badge" class="px-3 py-1.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300">
+          Conectando à API...
+        </span>
+        <a id="swagger-link" href="http://localhost:8000/docs" target="_blank" class="px-3 py-1.5 rounded-lg bg-indigo-600/20 border border-indigo-500/40 text-indigo-300 hover:bg-indigo-600/30 transition">
+          ⚡ Swagger API (:8000/docs)
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto w-full px-4 py-6 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1">
+    <aside class="lg:col-span-4 space-y-6">
+      <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-semibold text-white">✋ Meus Acordes Dominados</h2>
+          <label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+            <input type="checkbox" id="avoid-barre-toggle" checked class="rounded bg-slate-800 border-slate-700 text-emerald-500" onchange="saveProfile()" />
+            Evitar Pestanas
+          </label>
+        </div>
+        <div id="known-chords-list" class="flex flex-wrap gap-1.5"></div>
+        <div class="flex gap-2 pt-1">
+          <input id="new-chord-input" type="text" placeholder="Adicionar acorde (ex: Bm, F7M)..."
+            class="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500"
+            onkeydown="if(event.key==='Enter') addChord()" />
+          <button onclick="addChord()" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium transition">
+            + Adicionar
+          </button>
+        </div>
+      </section>
+
+      <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+        <h2 class="text-sm font-semibold text-white">🔍 Buscar Música no Cifra Club</h2>
+        <div class="space-y-2">
+          <input id="direct-artist" type="text" placeholder="Artista (ex: Legião Urbana)"
+            class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white" />
+          <input id="direct-track" type="text" placeholder="Música (ex: Tempo Perdido)"
+            class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white"
+            onkeydown="if(event.key==='Enter') fetchDirectSong()" />
+          <button onclick="fetchDirectSong()" id="btn-direct-search"
+            class="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition">
+            Analisar Dificuldade & Abrir Cifra
+          </button>
+        </div>
+      </section>
+
+      <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+        <div class="flex items-center justify-between">
+          <h2 class="text-sm font-semibold text-white">🎧 Playlists (Spotify / Demo)</h2>
+          <button onclick="loadPlaylists()" class="text-xs text-emerald-400 hover:underline">Atualizar</button>
+        </div>
+        <div id="playlists-container" class="space-y-2 max-h-80 overflow-y-auto pr-1"></div>
+      </section>
+    </aside>
+
+    <section class="lg:col-span-8 space-y-6">
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Filtro Instantâneo:</span>
+          <button onclick="filterByLevel('')" class="px-3 py-1 rounded-lg text-xs bg-slate-800 text-white border border-slate-700">Todas</button>
+          <button onclick="filterByLevel('Fácil')" class="px-3 py-1 rounded-lg text-xs bg-emerald-950/60 text-emerald-300 border border-emerald-700/50">🟢 Fácil</button>
+          <button onclick="filterByLevel('Médio')" class="px-3 py-1 rounded-lg text-xs bg-amber-950/60 text-amber-300 border border-amber-700/50">🟡 Médio</button>
+          <button onclick="filterByLevel('Difícil')" class="px-3 py-1 rounded-lg text-xs bg-rose-950/60 text-rose-300 border border-rose-700/50">🔴 Difícil</button>
+        </div>
+        <div class="flex items-center gap-2">
+          <select id="max-chords-select" onchange="loadCatalog()" class="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-300">
+            <option value="">Qualquer nº de acordes</option>
+            <option value="4">Até 4 acordes</option>
+            <option value="6">Até 6 acordes</option>
+          </select>
+          <button onclick="loadCatalog()" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs text-slate-200">
+            📂 Catálogo Salvo
+          </button>
+        </div>
+      </div>
+
+      <div id="songs-header" class="flex items-center justify-between">
+        <h3 id="results-title" class="text-sm font-semibold text-slate-300">Músicas Recomendadas</h3>
+        <span id="results-count" class="text-xs text-slate-500"></span>
+      </div>
+      <div id="songs-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+
+      <div id="sheet-panel" class="hidden bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+        <div class="flex flex-wrap items-start justify-between gap-4 border-b border-slate-800 pb-4">
+          <div>
+            <h3 id="sheet-title" class="text-lg font-bold text-white"></h3>
+            <p id="sheet-subtitle" class="text-xs text-slate-400"></p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="transposeCurrent(-1)" class="px-2.5 py-1.5 rounded-lg bg-slate-800 text-xs text-slate-200 hover:bg-slate-700">-1/2 Tom</button>
+            <span id="semitone-label" class="text-xs font-mono text-emerald-400 px-1">0 st</span>
+            <button onclick="transposeCurrent(1)" class="px-2.5 py-1.5 rounded-lg bg-slate-800 text-xs text-slate-200 hover:bg-slate-700">+1/2 Tom</button>
+            <a id="sheet-external-url" href="#" target="_blank" class="px-3 py-1.5 rounded-lg bg-slate-800 text-xs text-slate-300 hover:bg-slate-700">
+              Cifra Club ↗
+            </a>
+            <button onclick="document.getElementById('sheet-panel').classList.add('hidden')" class="px-2.5 py-1.5 rounded-lg bg-slate-800 text-xs text-slate-400 hover:text-white">
+              ✕
+            </button>
+          </div>
+        </div>
+        <div id="sheet-capo-box" class="hidden p-3 rounded-lg bg-indigo-950/50 border border-indigo-500/40 text-xs text-indigo-200"></div>
+        <pre id="sheet-content" class="cifra-sheet bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs leading-relaxed overflow-x-auto max-h-[600px] overflow-y-auto font-mono text-slate-200"></pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    // Decoupled API base URL (configurable via ?api=http://... or defaults to port 8000 on same host)
+    const API_BASE = new URLSearchParams(window.location.search).get('api')
+      || `${window.location.protocol}//${window.location.hostname}:8000`;
+
+    document.getElementById('api-url-label').textContent = API_BASE;
+    document.getElementById('swagger-link').href = `${API_BASE}/docs`;
+
+    let userProfile = { known_chords: [], avoid_barre: true };
+    let currentSongs = [];
+    let activeLevelFilter = '';
+    let activeSong = { artist: '', trackName: '', semitones: 0 };
+
+    async function init() {
+      await loadStatus();
+      await loadPlaylists();
+      await loadCatalog();
+    }
+
+    async function loadStatus() {
+      const res = await fetch(`${API_BASE}/api/status`);
+      const data = await res.json();
+      userProfile = data.profile;
+      document.getElementById('avoid-barre-toggle').checked = userProfile.avoid_barre;
+      const badge = document.getElementById('status-badge');
+      badge.innerHTML = `${data.spotify_configured ? '🟢 Spotify Conectado' : '🟡 Modo Demo (Spotify s/ chave)'} • <b>${data.indexed_songs_count}</b> cifras indexadas`;
+      renderKnownChords();
+    }
+
+    function renderKnownChords() {
+      const container = document.getElementById('known-chords-list');
+      container.innerHTML = userProfile.known_chords.map(ch => `
+        <span class="chord-badge px-2.5 py-1 rounded-md text-xs font-mono flex items-center gap-1.5">
+          ${ch}
+          <button onclick="removeChord('${ch}')" class="hover:text-white opacity-70">×</button>
+        </span>
+      `).join('');
+    }
+
+    async function addChord() {
+      const input = document.getElementById('new-chord-input');
+      const val = input.value.trim();
+      if (!val) return;
+      if (!userProfile.known_chords.includes(val)) {
+        userProfile.known_chords.push(val);
+        input.value = '';
+        await saveProfile();
+      }
+    }
+
+    async function removeChord(ch) {
+      userProfile.known_chords = userProfile.known_chords.filter(c => c !== ch);
+      await saveProfile();
+    }
+
+    async function saveProfile() {
+      userProfile.avoid_barre = document.getElementById('avoid-barre-toggle').checked;
+      const res = await fetch(`${API_BASE}/api/profile`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          known_chords: userProfile.known_chords,
+          avoid_barre: userProfile.avoid_barre
+        })
+      });
+      userProfile = await res.json();
+      renderKnownChords();
+      await loadCatalog();
+    }
+
+    async function loadPlaylists() {
+      const container = document.getElementById('playlists-container');
+      container.innerHTML = '<p class="text-xs text-slate-500">Carregando playlists...</p>';
+      const res = await fetch(`${API_BASE}/api/playlists`);
+      const playlists = await res.json();
+      container.innerHTML = playlists.map(p => `
+        <div class="p-3 rounded-lg bg-slate-950 border border-slate-800/80 flex items-center justify-between gap-2 hover:border-slate-700 transition">
+          <div>
+            <p class="text-xs font-semibold text-white">${p.name}</p>
+            <p class="text-[11px] text-slate-500">${p.total_tracks} faixas</p>
+          </div>
+          <button onclick="analyzePlaylist('${p.id}', '${p.name.replace(/'/g, "\\'")}')"
+            class="px-2.5 py-1.5 rounded-lg bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-600/30 text-xs font-medium whitespace-nowrap">
+            ⚡ Analisar
+          </button>
+        </div>
+      `).join('');
+    }
+
+    async function analyzePlaylist(playlistId, name) {
+      document.getElementById('results-title').textContent = `Analisando playlist: ${name}...`;
+      document.getElementById('songs-grid').innerHTML = `
+        <div class="col-span-2 p-8 text-center text-xs text-slate-400 bg-slate-900/50 border border-slate-800 rounded-xl">
+          Buscando cifras no Cifra Club via API (:8000) e indexando pesos harmônicos...
+        </div>`;
+      const res = await fetch(`${API_BASE}/api/playlists/${playlistId}/recommendations?limit=12&avoid_barre=${userProfile.avoid_barre}`);
+      currentSongs = await res.json();
+      document.getElementById('results-title').textContent = `Recomendações: ${name}`;
+      await loadStatus();
+      renderSongs();
+    }
+
+    async function loadCatalog() {
+      const maxChords = document.getElementById('max-chords-select').value;
+      const params = new URLSearchParams();
+      if (maxChords) params.set('max_chords', maxChords);
+      if (activeLevelFilter) params.set('level', activeLevelFilter);
+      const res = await fetch(`${API_BASE}/api/catalog?${params.toString()}`);
+      currentSongs = await res.json();
+      document.getElementById('results-title').textContent = 'Catálogo Indexado no SQLite (Busca < 2ms)';
+      renderSongs();
+    }
+
+    function filterByLevel(level) {
+      activeLevelFilter = level;
+      renderSongs();
+    }
+
+    function renderSongs() {
+      const grid = document.getElementById('songs-grid');
+      const filtered = activeLevelFilter
+        ? currentSongs.filter(s => (s.level || '').toLowerCase() === activeLevelFilter.toLowerCase())
+        : currentSongs;
+
+      document.getElementById('results-count').textContent = `${filtered.length} música(s)`;
+
+      if (!filtered.length) {
+        grid.innerHTML = `
+          <div class="col-span-2 p-8 text-center text-xs text-slate-500 bg-slate-900/40 border border-slate-800/80 rounded-xl">
+            Nenhuma música encontrada com este filtro. Clique em <b>⚡ Analisar</b> em uma playlist ao lado ou busque uma música diretamente!
+          </div>`;
+        return;
+      }
+
+      grid.innerHTML = filtered.map(s => {
+        const songTitle = s.track_name || s.name;
+        const levelColor = s.level === 'Fácil'
+          ? 'bg-emerald-950 text-emerald-300 border-emerald-700/60'
+          : s.level === 'Médio'
+          ? 'bg-amber-950 text-amber-300 border-amber-700/60'
+          : 'bg-rose-950 text-rose-300 border-rose-700/60';
+
+        const chordsHtml = (s.unique_chords || []).map(ch => {
+          const isBarre = (s.barre_chords || []).includes(ch);
+          const isUnknown = (s.unknown_chords || []).includes(ch);
+          const cls = isBarre ? 'barre-badge' : isUnknown ? 'unknown-badge' : 'chord-badge';
+          const freq = s.chord_frequencies && s.chord_frequencies[ch] ? `<span class="opacity-60 text-[10px]">×${s.chord_frequencies[ch]}</span>` : '';
+          return `<span class="${cls} px-2 py-0.5 rounded text-[11px] font-mono">${ch}${freq}</span>`;
+        }).join('');
+
+        const capoHtml = s.capo_suggestion ? `
+          <div class="mt-2 p-2 rounded-lg bg-indigo-950/40 border border-indigo-500/30 text-[11px] text-indigo-300">
+            💡 ${s.capo_suggestion.message}
+          </div>` : '';
+
+        return `
+          <div class="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl p-4 flex flex-col justify-between gap-3 transition">
+            <div class="space-y-2">
+              <div class="flex items-start justify-between gap-2">
+                <div>
+                  <h4 class="text-sm font-bold text-white">${songTitle}</h4>
+                  <p class="text-xs text-slate-400">${s.artist} ${s.key ? `• Tom: <b>${s.key}</b>` : ''}</p>
+                </div>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold border ${levelColor}">
+                  ${s.level} (${s.score})
+                </span>
+              </div>
+              <div class="flex flex-wrap gap-1 pt-1">${chordsHtml}</div>
+              ${capoHtml}
+            </div>
+            <div class="flex items-center justify-between pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
+              <span>Cobertura: <b class="text-slate-200">${s.weighted_known_pct ?? s.known_match_pct}%</b> • Densidade: ${s.avg_changes_per_line || '-'} ac/linha</span>
+              <button onclick="openChordSheet('${s.artist.replace(/'/g, "\\'")}', '${songTitle.replace(/'/g, "\\'")}', 0)"
+                class="text-emerald-400 hover:text-emerald-300 font-semibold">
+                Ver Cifra →
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function fetchDirectSong() {
+      const artist = document.getElementById('direct-artist').value.trim();
+      const track = document.getElementById('direct-track').value.trim();
+      if (!artist || !track) return;
+      const btn = document.getElementById('btn-direct-search');
+      btn.textContent = 'Buscando no Cifra Club...';
+      btn.disabled = true;
+      try {
+        await openChordSheet(artist, track, 0);
+        await loadStatus();
+        await loadCatalog();
+      } finally {
+        btn.textContent = 'Analisar Dificuldade & Abrir Cifra';
+        btn.disabled = false;
+      }
+    }
+
+    async function transposeCurrent(delta) {
+      if (!activeSong.artist) return;
+      const next = ((activeSong.semitones + delta + 12) % 12);
+      await openChordSheet(activeSong.artist, activeSong.trackName, next);
+    }
+
+    async function openChordSheet(artist, trackName, semitones = 0) {
+      activeSong = { artist, trackName, semitones };
+      document.getElementById('semitone-label').textContent = `${semitones > 0 ? '+' : ''}${semitones} st`;
+      const panel = document.getElementById('sheet-panel');
+      panel.classList.remove('hidden');
+      document.getElementById('sheet-title').textContent = `Carregando ${artist} - ${trackName}...`;
+      document.getElementById('sheet-content').textContent = 'Buscando cifra...';
+      panel.scrollIntoView({ behavior: 'smooth' });
+
+      const params = new URLSearchParams({ artist, track_name: trackName, semitones: String(semitones) });
+      const res = await fetch(`${API_BASE}/api/chords?${params.toString()}`);
+      const data = await res.json();
+      const ev = data.evaluation || {};
+
+      document.getElementById('sheet-title').textContent = `${data.track_name} — ${data.artist}`;
+      document.getElementById('sheet-subtitle').textContent =
+        `Nível: ${ev.level} (Score ${ev.score}/100) • Tom Original: ${data.key || 'N/A'} • Cobertura no Tempo: ${ev.weighted_known_pct}%`;
+      document.getElementById('sheet-external-url').href = data.url;
+
+      const capoBox = document.getElementById('sheet-capo-box');
+      if (ev.capo_suggestion) {
+        capoBox.classList.remove('hidden');
+        capoBox.textContent = `💡 Dica Anti-Pestana: ${ev.capo_suggestion.message}`;
+      } else {
+        capoBox.classList.add('hidden');
+      }
+
+      document.getElementById('sheet-content').textContent = data.raw_chord_sheet || 'Cifra não encontrada.';
+    }
+
+    init();
+  </script>
+</body>
+</html>

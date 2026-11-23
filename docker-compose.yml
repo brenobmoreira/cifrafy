@@ -1,0 +1,27 @@
+services:
+  cifrafy-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cifrafy-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./backend/src:/app/src
+      - ./data:/app/data
+    restart: unless-stopped
+
+  cifrafy-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cifrafy-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - cifrafy-backend
+    volumes:
+      - ./frontend/index.html:/usr/share/nginx/html/index.html:ro
+    restart: unless-stopped
