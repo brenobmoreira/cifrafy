@@ -1,49 +1,45 @@
-# 🎸 Cifrafy — Spotify & Cifra Club Assistant (Backend `/api` + `/mcp` & Frontend)
+# Cifrafy
 
-O **Cifrafy** conecta suas playlists do **Spotify** (usando a Spotify Web API oficial via `httpx`) às cifras do **Cifra Club**, avaliando a dificuldade real para o seu nível no violão, detectando pestanas e "acordes intrusos" de passagem, e sugerindo automaticamente o uso de **Capotraste** para eliminar pestanas.
+O Cifrafy liga suas playlists do Spotify às cifras do Cifra Club e mostra o que você consegue tocar hoje, de acordo com os acordes que já domina.
 
----
+## Como funciona
 
-## 🏗️ Estrutura do Projeto (`/home/breno/projects/cifrafy`)
+- **Dificuldade.** Fácil: sem pestana relevante e com até 4 acordes, ou com todos conhecidos. Médio: exatamente 1 acorde novo ou 1 pestana. Difícil: o resto. Acordes raros de passagem são ignorados. A densidade de trocas só afeta a ordenação.
+- **Capotraste.** Se uma casa de 1 a 7 deixa a música Fácil, ela aparece como "Fácil com capotraste".
+- **Próximo acorde.** Indica quais acordes liberam mais músicas da sua biblioteca.
+- **Repertório.** Marque músicas como Quero aprender, Praticando ou Dominada.
+- **Sync seletivo.** Você escolhe as faixas, até 15 por lote. Um limitador global faz uma requisição por vez ao Cifra Club e para ao receber 403 ou 429.
+- **Armazenamento.** A cifra completa fica no SQLite, comprimida com zlib, e nunca é apagada automaticamente. Abrir uma música sincronizada não acessa o site.
 
-Arquitetura limpa separada em **Backend** (que serve tanto a REST API em `/api` quanto o servidor MCP em `/mcp` no mesmo processo FastAPI) e **Frontend**:
+## Estrutura
 
 ```text
-cifrafy/
-├── backend/                   # Serviço Backend Unificado (Porta 8000)
-│   ├── src/
-│   │   ├── api.py             # FastAPI expondo /api/* e montando o FastMCP em /mcp
-│   │   ├── mcp_server.py      # Definição das Tools do FastMCP (HTTP /mcp ou stdio)
-│   │   ├── db.py              # SQLite 2-Tier (song_index ~200B + chord_sheets_cache zlib/LRU)
-│   │   ├── config.py          # Configurações (.env)
-│   │   └── core/
-│   │       ├── analyzer.py        # Motor de dificuldade ponderada + Capotraste anti-pestana
-│   │       ├── chord_scraper.py   # Scraper Cifra Club + Busca Solr + Limpeza de títulos Spotify
-│   │       └── spotify_client.py  # Cliente assíncrono oficial da Spotify Web API (httpx puro)
-│   ├── tests/
-│   ├── Dockerfile
-│   └── pyproject.toml
-│
-├── frontend/                  # Serviço Frontend Web Desacoplado (Porta 3000)
-│   ├── index.html             # Interface Dark-Mode consumindo http://localhost:8000/api
-│   └── Dockerfile
-│
-├── docs/
-│   └── ARCHITECTURE_AND_DIFFICULTY.md
-├── data/                      # Volume persistente do banco SQLite (guitar.db)
-├── docker-compose.yml         # Sobe cifrafy-backend (:8000) e cifrafy-frontend (:3000)
-└── .env.example
+backend/    FastAPI em /api e MCP em /mcp, no mesmo processo (porta 8000)
+  src/core/ analyzer, chord_scraper, spotify_client e library (casos de uso de API e MCP)
+  src/db.py SQLite
+frontend/   Site em JS e CSS puros, sem build (porta 3000)
+docs/       Arquitetura e regra de dificuldade
 ```
 
----
+## Como rodar
 
-## 🚀 Como Rodar
-
-### Com Docker Compose
 ```bash
-cd /home/breno/projects/cifrafy
-docker compose up --build
+cp .env.example .env   # preencha as credenciais do Spotify
+./dev.sh               # backend e frontend com hot-reload
 ```
-- **Frontend Web (Cifrafy UI):** `http://localhost:3000`
-- **REST API & Swagger Docs:** `http://localhost:8000/docs`
-- **Endpoint MCP (Streamable HTTP / SSE):** `http://localhost:8000/mcp`
+
+Também é possível usar `docker compose up --build`.
+
+- Site: `http://127.0.0.1:3000`
+- API: `http://127.0.0.1:8000/docs`
+- MCP: `http://127.0.0.1:8000/mcp/`
+
+No painel do Spotify, registre o redirect `http://127.0.0.1:8000/api/spotify/callback`. O Spotify não aceita `localhost`.
+
+## Testes
+
+```bash
+cd backend
+pip install -e ".[dev]"
+pytest
+```

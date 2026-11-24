@@ -24,4 +24,6 @@ services:
       - cifrafy-backend
     volumes:
       - ./frontend/index.html:/usr/share/nginx/html/index.html:ro
+      - ./frontend/css:/usr/share/nginx/html/css:ro
+      - ./frontend/js:/usr/share/nginx/html/js:ro
     restart: unless-stopped

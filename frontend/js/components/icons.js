@@ -1,0 +1,41 @@
+import { s } from '../dom.js';
+
+const PATHS = {
+  today: ['M9 18V6l10-2v12', 'M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z', 'M19 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z'],
+  list: ['M4 6h11', 'M4 12h11', 'M4 18h7', 'M18 8v9', 'M18 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z'],
+  bookmark: ['M6 4h12v17l-6-4-6 4V4Z'],
+  grid: ['M6 3v18', 'M10 3v18', 'M14 3v18', 'M18 3v18', 'M3 8h18', 'M3 14h18'],
+  metronome: ['M9.5 3h5L19 21H5L9.5 3Z', 'M7 15h10', 'M12 15l5-9'],
+  timer: ['M12 21a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z', 'M12 9v4l2.5 2', 'M9.5 2.5h5'],
+  mic: ['M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3Z', 'M5.5 11.5a6.5 6.5 0 0 0 13 0', 'M12 18v3'],
+  back: ['M15 5l-7 7 7 7'],
+  plus: ['M12 5v14', 'M5 12h14'],
+  minus: ['M5 12h14'],
+  play: ['M7 4.5v15l12-7.5-12-7.5Z'],
+  pause: ['M8 5v14', 'M16 5v14'],
+  sliders: ['M4 7h10', 'M18 7h2', 'M4 17h2', 'M10 17h10', 'M16 5v4', 'M8 15v4'],
+  external: ['M14 4h6v6', 'M20 4l-9 9', 'M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5'],
+  close: ['M6 6l12 12', 'M18 6L6 18'],
+  check: ['M5 12.5l4.5 4.5L19 7.5'],
+  trash: ['M4 7h16', 'M9 7V4h6v3', 'M6 7l1 13h10l1-13'],
+  link: ['M10 14a4 4 0 0 0 6 .4l3-3a4 4 0 0 0-5.7-5.7l-1 1', 'M14 10a4 4 0 0 0-6-.4l-3 3a4 4 0 0 0 5.7 5.7l1-1'],
+};
+
+export function icon(name, size = 22) {
+  return s(
+    'svg',
+    {
+      class: 'icon',
+      viewBox: '0 0 24 24',
+      width: size,
+      height: size,
+      fill: 'none',
+      stroke: 'currentColor',
+      'stroke-width': 1.8,
+      'stroke-linecap': 'round',
+      'stroke-linejoin': 'round',
+      'aria-hidden': 'true',
+    },
+    (PATHS[name] || []).map((d) => s('path', { d })),
+  );
+}

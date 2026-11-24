@@ -28,9 +28,7 @@ class Settings:
         or os.getenv("SPOTIPY_REDIRECT_URI")
         or "http://127.0.0.1:8000/api/spotify/callback"
     )
-    SPOTIFY_CACHE_PATH: str = os.getenv(
-        "SPOTIFY_CACHE_PATH", str(REPO_ROOT / "data" / ".spotify_token.json")
-    )
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://127.0.0.1:3000").rstrip("/")
 
     DEFAULT_KNOWN_CHORDS: list[str] = [
         c.strip()
@@ -41,7 +39,9 @@ class Settings:
     DATABASE_PATH: Path = Path(
         os.getenv("DATABASE_PATH", str(REPO_ROOT / "data" / "guitar.db"))
     )
-    MAX_CACHED_SHEETS: int = int(os.getenv("MAX_CACHED_SHEETS", "200"))
+    SPOTIFY_CACHE_PATH: str = os.getenv(
+        "SPOTIFY_CACHE_PATH", str(DATABASE_PATH.parent / ".spotify_token.json")
+    )
 
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))

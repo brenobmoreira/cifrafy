@@ -11,12 +11,16 @@ Implements multi-dimensional difficulty analysis:
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Callable
 
 from src.config import settings
 
 # Chromatic scale in sharps and mapping from flat equivalents
 CHROMATIC_SHARPS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+CHROMATIC_FLATS = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+# Usual guitar spelling when the source root is natural or sharp
+MAJOR_SPELLING = ["C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"]
+MINOR_SPELLING = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"]
 NOTE_TO_INDEX: dict[str, int] = {
     "C": 0,
     "B#": 0,
@@ -61,18 +65,32 @@ BARRE_MINOR_ROOT_INDICES = {
 # Chords with barre roots that actually have common easy non-barre open shapes
 NON_BARRE_EXCEPTIONS = {
     "F7M",
+    "F7+",
     "Fmaj7",
     "F7M(9)",
     "B7",  # Open B7 on 2nd fret (x21202) is frequently played without a barre
 }
 
 CHORD_REGEX = re.compile(
-    r"^([A-G][#b]?)(m(?!aj)|min|dim|aug|°|\+)?([0-9Mmajaddsus#b()\-\+]*)(?:/([A-G][#b]?))?$"
+    r"^([A-G][#b]?)"
+    r"(min|m(?!aj)|dim|aug|°|º|\+)?"
+    r"((?:maj|add|sus|dim|aug|M|m|[0-9#b+\-°º]|\([^)]*\)|/[#b]?\d+)*)"
+    r"(?:/([A-G][#b]?))?$"
 )
+
+RARE_CHORD_SHARE = 0.04
+MAX_EASY_CAPO_FRET = 7
+
+# Valid chords that are also common words in lyrics
+AMBIGUOUS_LYRIC_TOKENS = {"A", "E", "Em", "Am"}
+TAB_LINE = re.compile(r"^\s*[eBGDAE]\|")
+SHEET_TOKEN = re.compile(r"\[[^\]]*\]|\S+")
+SECTION_LINE = re.compile(r"^(?:\[[^\]]*\]|\S+:)$")
+NEUTRAL_SHEET_TOKEN = re.compile(r"^(?:\|+|-+|%|/+|\.+|\(?\d+x\)?|\(?x\d+\)?|\(?n\.c\.?\)?)$", re.IGNORECASE)
 
 
 def parse_chord(chord: str) -> dict[str, Any]:
-    """Parse a chord string into root, minor flag, extension, bass note, and barre status."""
+    """Parse a chord string; tokens that are not chords get `root_idx == -1`."""
     cleaned = chord.strip()
     match = CHORD_REGEX.match(cleaned)
     if not match:
@@ -80,17 +98,18 @@ def parse_chord(chord: str) -> dict[str, Any]:
             "raw": cleaned,
             "root": cleaned,
             "root_idx": -1,
+            "quality": "",
             "is_minor": False,
             "extension": "",
             "bass": None,
             "is_barre": False,
-            "complexity_weight": 2.0,
+            "complexity_weight": 0.0,
         }
 
     root, quality, ext, bass = match.groups()
     root_idx = NOTE_TO_INDEX.get(root, -1)
     is_minor = quality in ("m", "min")
-    is_dim_aug = quality in ("dim", "aug", "°", "+") or "dim" in (ext or "") or "b5" in (ext or "")
+    is_dim_aug = quality in ("dim", "aug", "°", "º", "+") or any(mark in (ext or "") for mark in ("dim", "b5", "5-", "-5"))
     ext = ext or ""
 
     # Normalize base chord name without slash bass for exception checking
@@ -132,6 +151,27 @@ def is_barre_chord(chord: str) -> bool:
     return bool(parse_chord(chord)["is_barre"])
 
 
+def _chord_key(parsed: dict[str, Any]) -> tuple[int, str, str, int | None]:
+    """Enharmonic identity of a chord, so that A#m7 and Bbm7 compare equal."""
+    quality = {"min": "m", "º": "°"}.get(parsed["quality"], parsed["quality"])
+    bass = NOTE_TO_INDEX.get(parsed["bass"]) if parsed["bass"] else None
+    return parsed["root_idx"], quality, parsed["extension"], bass
+
+
+def _known_keys(known_chords: list[str]) -> set[tuple[int, str, str, int | None]]:
+    parsed = (parse_chord(c) for c in known_chords)
+    return {_chord_key(p) for p in parsed if p["root_idx"] != -1}
+
+
+def _is_known(parsed: dict[str, Any], known_keys: set[tuple[int, str, str, int | None]]) -> bool:
+    """Exact match, or a simple open extension of a known triad (Am7 -> Am)."""
+    key = _chord_key(parsed)
+    if key in known_keys:
+        return True
+    triad = (key[0], key[1], "", None)
+    return not parsed["is_barre"] and parsed["complexity_weight"] <= 1.4 and triad in known_keys
+
+
 def transpose_chord(chord: str, semitones: int) -> str:
     """Transpose a single chord by `semitones` (positive or negative)."""
     if semitones % 12 == 0:
@@ -141,14 +181,208 @@ def transpose_chord(chord: str, semitones: int) -> str:
         return chord
 
     new_root_idx = (parsed["root_idx"] + semitones) % 12
-    new_root = CHROMATIC_SHARPS[new_root_idx]
+    if "b" in parsed["root"]:
+        spelling = CHROMATIC_FLATS
+    elif parsed["is_minor"] or parsed["quality"] in ("dim", "°", "º"):
+        spelling = MINOR_SPELLING
+    else:
+        spelling = MAJOR_SPELLING
+    new_root = spelling[new_root_idx]
     result = f"{new_root}{parsed['quality']}{parsed['extension']}"
 
     if parsed["bass"] and parsed["bass"] in NOTE_TO_INDEX:
         new_bass_idx = (NOTE_TO_INDEX[parsed["bass"]] + semitones) % 12
-        result += f"/{CHROMATIC_SHARPS[new_bass_idx]}"
+        use_flats = "b" in parsed["bass"] or "b" in new_root or new_root == "F"
+        result += f"/{(CHROMATIC_FLATS if use_flats else CHROMATIC_SHARPS)[new_bass_idx]}"
 
     return result
+
+
+def _split_sheet_token(token: str) -> tuple[str, str, str]:
+    """Separate a token from surrounding notation: `(G` -> `(`, `G`, ``."""
+    core = token
+    lead = ""
+    trail = ""
+    while core and core[0] in "(|":
+        lead += core[0]
+        core = core[1:]
+    while core and (core[-1] in "|,;." or (core[-1] == ")" and core.count(")") > core.count("("))):
+        trail = core[-1] + trail
+        core = core[:-1]
+    return lead, core, trail
+
+
+def _is_chord_token(token: str) -> bool:
+    return bool(token) and parse_chord(token)["root_idx"] != -1
+
+
+def _classify_sheet_line(line: str) -> tuple[bool, bool]:
+    """Return (only chords and notation, only chords that could be lyric words)."""
+    if TAB_LINE.match(line):
+        return False, False
+
+    chords: list[str] = []
+    has_label = False
+    for position, match in enumerate(SHEET_TOKEN.finditer(line)):
+        token = match.group()
+        if token.startswith("[") and token.endswith("]"):
+            has_label = True
+            continue
+        if position == 0 and token.endswith(":") and len(token) > 1:
+            has_label = True
+            continue
+        if NEUTRAL_SHEET_TOKEN.match(token):
+            continue
+        _, core, _ = _split_sheet_token(token)
+        if not _is_chord_token(core):
+            return False, False
+        chords.append(core)
+
+    if not chords:
+        return False, False
+    return True, not has_label and all(c in AMBIGUOUS_LYRIC_TOKENS for c in chords)
+
+
+def map_chord_line(line: str, convert: Callable[[str], str]) -> str:
+    """Replace chord tokens, absorbing length changes in the following spaces."""
+    output: list[str] = []
+    position = 0
+    extra_width = 0
+    for match in SHEET_TOKEN.finditer(line):
+        gap = line[position : match.start()]
+        if extra_width > 0:
+            removable = min(extra_width, max(len(gap) - 1, 0))
+            gap = gap[removable:]
+            extra_width -= removable
+        elif extra_width < 0:
+            gap = " " * -extra_width + gap
+            extra_width = 0
+
+        token = match.group()
+        new_token = token
+        if not (token.startswith("[") and token.endswith("]")):
+            lead, core, trail = _split_sheet_token(token)
+            if _is_chord_token(core):
+                new_token = f"{lead}{convert(core)}{trail}"
+        extra_width += len(new_token) - len(token)
+        output.extend((gap, new_token))
+        position = match.end()
+    output.append(line[position:])
+    return "".join(output)
+
+
+def _transpose_chord_line(line: str, semitones: int) -> str:
+    return map_chord_line(line, lambda chord: transpose_chord(chord, semitones))
+
+
+def _sheet_line_types(lines: list[str]) -> list[str]:
+    """Classify each line as chords, lyric, tab, section or blank.
+
+    A line holding only words like `A` or `E` right after a chord line is lyric,
+    because chord lines are followed by the lyric they belong to.
+    """
+    types: list[str] = []
+    after_chords_or_ambiguous_lyric = False
+    for line in lines:
+        is_chord_line, is_ambiguous = _classify_sheet_line(line)
+        if is_chord_line and is_ambiguous and after_chords_or_ambiguous_lyric:
+            types.append("lyric")
+            continue
+        after_chords_or_ambiguous_lyric = is_chord_line
+        stripped = line.strip()
+        if is_chord_line:
+            types.append("chords")
+        elif not stripped:
+            types.append("blank")
+        elif TAB_LINE.match(line):
+            types.append("tab")
+        elif SECTION_LINE.match(stripped):
+            types.append("section")
+        else:
+            types.append("lyric")
+    return types
+
+
+def transpose_sheet(text: str, semitones: int) -> str:
+    """Transpose only the chord lines of a sheet, leaving lyrics and tabs untouched."""
+    if semitones % 12 == 0 or not text:
+        return text
+    return "\n".join(line["text"] for line in structure_sheet(text, semitones))
+
+
+def structure_sheet(text: str, semitones: int = 0) -> list[dict[str, str]]:
+    """Split a sheet into typed lines, already transposed.
+
+    Lines are classified on the original text, since a transposed chord can look like a lyric word.
+    """
+    if not text:
+        return []
+    lines = text.split("\n")
+    transpose = semitones % 12 != 0
+    return [
+        {
+            "type": line_type,
+            "text": _transpose_chord_line(line, semitones) if transpose and line_type == "chords" else line,
+        }
+        for line, line_type in zip(lines, _sheet_line_types(lines))
+    ]
+
+
+def extract_chord_sequence(text: str) -> list[str]:
+    """Return the chords of a sheet in playing order, ignoring lyrics, tabs and notation."""
+    if not text:
+        return []
+    lines = text.split("\n")
+    sequence: list[str] = []
+    for line, line_type in zip(lines, _sheet_line_types(lines)):
+        if line_type != "chords":
+            continue
+        for position, match in enumerate(SHEET_TOKEN.finditer(line)):
+            token = match.group()
+            if token.startswith("[") or (position == 0 and token.endswith(":")):
+                continue
+            if NEUTRAL_SHEET_TOKEN.match(token):
+                continue
+            _, core, _ = _split_sheet_token(token)
+            if _is_chord_token(core):
+                sequence.append(core)
+    return sequence
+
+
+def canonical_chord(chord: str) -> str | None:
+    """Single spelling for enharmonic chords (Bbm and A#m), or None if it is not a chord."""
+    parsed = parse_chord(chord)
+    if parsed["root_idx"] == -1:
+        return None
+    root, quality, extension, bass = _chord_key(parsed)
+    slash = f"/{CHROMATIC_SHARPS[bass]}" if bass is not None else ""
+    return f"{CHROMATIC_SHARPS[root]}{quality}{extension}{slash}"
+
+
+def chord_change_key(first: str, second: str) -> tuple[str, str] | None:
+    """Direction-free identity of a chord change, or None if it is not a real change."""
+    a, b = canonical_chord(first), canonical_chord(second)
+    if a is None or b is None or a == b:
+        return None
+    return (a, b) if a < b else (b, a)
+
+
+def is_known_chord(chord: str, known_chords: list[str]) -> bool:
+    return _is_known(parse_chord(chord), _known_keys(known_chords))
+
+
+def count_easy_songs(
+    songs: list[dict[str, Any]],
+    known_chords: list[str],
+    avoid_barre: bool,
+    learned_chords: list[str] | None = None,
+) -> int:
+    learned = _known_keys(learned_chords or [])
+    known = _known_keys(known_chords) | learned
+    return sum(
+        _difficulty_level(song.get("chord_frequencies") or {}, known, avoid_barre, learned) == "Fácil"
+        for song in songs
+    )
 
 
 def find_best_capo(
@@ -159,10 +393,21 @@ def find_best_capo(
 
     Note: Placing a capo on fret `N` means playing chord shapes transposed by `-N` semitones!
     """
+    chord_frequencies = {
+        ch: count for ch, count in chord_frequencies.items() if parse_chord(ch)["root_idx"] != -1
+    }
     if not chord_frequencies:
-        return {"capo_fret": 0, "transposed_chords": [], "barre_count": 0, "weighted_barre_pct": 0.0}
+        return {
+            "capo_fret": 0,
+            "semitone_shift": 0,
+            "transposed_chords": [],
+            "barre_chords": [],
+            "barre_count": 0,
+            "weighted_barre_pct": 0.0,
+            "weighted_known_pct": 0.0,
+        }
 
-    known_set = {c.strip() for c in (known_chords or settings.DEFAULT_KNOWN_CHORDS)}
+    known_keys = _known_keys(known_chords if known_chords is not None else settings.DEFAULT_KNOWN_CHORDS)
     total_events = max(sum(chord_frequencies.values()), 1)
 
     best_option: dict[str, Any] | None = None
@@ -177,7 +422,7 @@ def find_best_capo(
         barre_chords = [ch for ch in transposed_freqs if is_barre_chord(ch)]
         barre_events = sum(transposed_freqs[ch] for ch in barre_chords)
         known_events = sum(
-            count for ch, count in transposed_freqs.items() if ch in known_set or parse_chord(ch)["root"] + parse_chord(ch)["quality"] in known_set
+            count for ch, count in transposed_freqs.items() if _is_known(parse_chord(ch), known_keys)
         )
 
         option = {
@@ -204,6 +449,146 @@ def find_best_capo(
     return best_option
 
 
+def _is_rare(count: int, total_events: int, has_real_frequencies: bool) -> bool:
+    """A chord appearing <= 2 times and < 4% of the song is an intruder/passing chord."""
+    return has_real_frequencies and count / total_events < RARE_CHORD_SHARE and count <= 2
+
+
+def _difficulty_level(
+    freqs: dict[str, int],
+    known_keys: set[tuple[int, str, str, int | None]],
+    avoid_barre: bool,
+    learned_keys: set[tuple[int, str, str, int | None]] | None = None,
+) -> str:
+    """Fácil: no relevant barre and (<= 4 chords or all known). Médio: exactly 1 obstacle.
+
+    A known barre is an obstacle only for who avoids barres. `learned_keys` are chords the user
+    would learn on purpose, so they stop being obstacles even if they are barres.
+    """
+    learned_keys = learned_keys or set()
+    playable = {ch: c for ch, c in freqs.items() if c > 0 and parse_chord(ch)["root_idx"] != -1}
+    if not playable:
+        return "Desconhecido"
+
+    total_events = sum(playable.values())
+    has_real_frequencies = total_events > len(playable)
+    relevant = [ch for ch, c in playable.items() if not _is_rare(c, total_events, has_real_frequencies)]
+    relevant = relevant or list(playable)
+
+    barre_obstacles = 0
+    new_chords = 0
+    for ch in relevant:
+        parsed = parse_chord(ch)
+        is_known = _is_known(parsed, known_keys)
+        if parsed["is_barre"]:
+            if not is_known or (avoid_barre and _chord_key(parsed) not in learned_keys):
+                barre_obstacles += 1
+        elif not is_known:
+            new_chords += 1
+
+    if barre_obstacles == 0 and (len(relevant) <= 4 or new_chords == 0):
+        return "Fácil"
+    if barre_obstacles + new_chords == 1:
+        return "Médio"
+    return "Difícil"
+
+
+def _transpose_frequencies(freqs: dict[str, int], semitones: int) -> dict[str, int]:
+    transposed: dict[str, int] = {}
+    for ch, count in freqs.items():
+        new_chord = transpose_chord(ch, semitones)
+        transposed[new_chord] = transposed.get(new_chord, 0) + count
+    return transposed
+
+
+def _find_easy_capo(
+    freqs: dict[str, int],
+    known_keys: set[tuple[int, str, str, int | None]],
+    avoid_barre: bool,
+) -> tuple[int, dict[str, int]] | None:
+    """Return the lowest capo fret (1 to 7) whose shapes make the song Fácil."""
+    for fret in range(1, MAX_EASY_CAPO_FRET + 1):
+        shapes = _transpose_frequencies(freqs, -fret)
+        if _difficulty_level(shapes, known_keys, avoid_barre) == "Fácil":
+            return fret, shapes
+    return None
+
+
+def _capo_message(fret: int, shapes: list[str], barre_count: int) -> str:
+    if barre_count == 0:
+        barres = "sem pestanas"
+    elif barre_count == 1:
+        barres = "1 pestana"
+    else:
+        barres = f"{barre_count} pestanas"
+    return f"Com capotraste na {fret}ª casa, você toca usando {', '.join(shapes[:6])} ({barres})"
+
+
+def suggest_next_chords(
+    songs: list[dict[str, Any]],
+    known_chords: list[str],
+    avoid_barre: bool,
+    limit: int = 5,
+    learned_chords: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Rank the chords whose learning makes the most songs easier.
+
+    `learned_chords` simulates chords already learned on purpose, as in a learning trail.
+    """
+    learned_keys = _known_keys(learned_chords or [])
+    known_keys = _known_keys(known_chords) | learned_keys
+    rank = {"Fácil": 0, "Médio": 1, "Difícil": 2}
+    pending: list[tuple[dict[str, Any], int]] = []
+    candidates: dict[tuple[int, str, str, int | None], str] = {}
+
+    for song in songs:
+        freqs = song.get("chord_frequencies") or {}
+        level = _difficulty_level(freqs, known_keys, avoid_barre, learned_keys)
+        if level not in ("Médio", "Difícil"):
+            continue
+        pending.append((song, rank[level]))
+        for ch in freqs:
+            parsed = parse_chord(ch)
+            if parsed["root_idx"] != -1 and not _is_known(parsed, known_keys):
+                candidates.setdefault(_chord_key(parsed), ch)
+
+    suggestions: list[dict[str, Any]] = []
+    for key, chord in candidates.items():
+        improved: list[dict[str, Any]] = []
+        unlocked: list[dict[str, Any]] = []
+        for song, before in pending:
+            after = _difficulty_level(
+                song["chord_frequencies"], known_keys | {key}, avoid_barre, learned_keys | {key}
+            )
+            if rank[after] < before:
+                improved.append(song)
+                if after == "Fácil":
+                    unlocked.append(song)
+        if not improved:
+            continue
+        unlocked_ids = {id(song) for song in unlocked}
+        examples = unlocked + [song for song in improved if id(song) not in unlocked_ids]
+        suggestions.append(
+            {
+                "chord": chord,
+                "is_barre": is_barre_chord(chord),
+                "songs_improved": len(improved),
+                "songs_unlocked_easy": len(unlocked),
+                "examples": [
+                    {
+                        "song_id": song.get("id"),
+                        "artist": song.get("artist"),
+                        "track_name": song.get("track_name") or song.get("name"),
+                    }
+                    for song in examples[:3]
+                ],
+            }
+        )
+
+    suggestions.sort(key=lambda s: (-s["songs_unlocked_easy"], -s["songs_improved"], s["chord"]))
+    return suggestions[:limit]
+
+
 def evaluate_song_difficulty(
     unique_chords: list[str],
     known_chords: list[str] | None = None,
@@ -216,13 +601,14 @@ def evaluate_song_difficulty(
     effective_known = [
         c.strip() for c in (known_chords if known_chords is not None else settings.DEFAULT_KNOWN_CHORDS) if c.strip()
     ]
-    known_set = set(effective_known)
+    known_keys = _known_keys(effective_known)
 
     # Build frequency map (if only unique_chords was passed, assume uniform frequency = 1)
     if chord_frequencies:
         freqs = {ch: count for ch, count in chord_frequencies.items() if count > 0}
     else:
         freqs = {ch: 1 for ch in unique_chords if ch.strip()}
+    freqs = {ch: count for ch, count in freqs.items() if parse_chord(ch)["root_idx"] != -1}
 
     all_chords = list(freqs.keys())
     if not all_chords:
@@ -230,12 +616,18 @@ def evaluate_song_difficulty(
             "level": "Desconhecido",
             "has_barre": False,
             "barre_chords": [],
+            "core_barre_chords": [],
             "rare_barre_chords": [],
+            "known_barre_chords": [],
             "unknown_chords": [],
             "known_match_pct": 0.0,
             "weighted_known_pct": 0.0,
+            "weighted_barre_pct": 0.0,
+            "avg_changes_per_line": round(avg_changes_per_line, 2),
+            "has_tabs": has_tabs,
             "score": 0,
             "capo_suggestion": None,
+            "easy_with_capo": False,
         }
 
     total_events = max(sum(freqs.values()), 1)
@@ -245,41 +637,41 @@ def evaluate_song_difficulty(
     core_barre_chords: list[str] = []
     rare_barre_chords: list[str] = []
     unknown_chords: list[str] = []
-    core_unknown_chords: list[str] = []
+    known_barre_chords: list[str] = []
+    hard_barre_chords: list[str] = []  # frequent barres the user does not know yet
+    known_core_barres: list[str] = []
 
     known_events = 0
     barre_events = 0
+    hard_barre_events = 0
     weighted_complexity_sum = 0.0
 
     for ch in all_chords:
         count = freqs[ch]
-        share = count / total_events
         parsed = parse_chord(ch)
         weighted_complexity_sum += parsed["complexity_weight"] * count
 
-        # Check if chord is known (exact match or simple major/minor root match for basic extensions like Am7 -> Am)
-        base_triad = f"{parsed['root']}{parsed['quality']}"
-        is_known = (ch in known_set) or (
-            not parsed["is_barre"]
-            and parsed["complexity_weight"] <= 1.4
-            and base_triad in known_set
-        )
+        is_known = _is_known(parsed, known_keys)
 
         if is_known:
             known_events += count
         else:
             unknown_chords.append(ch)
-            if not has_real_frequencies or share >= 0.04 or count > 2:
-                core_unknown_chords.append(ch)
 
         if parsed["is_barre"]:
             barre_chords.append(ch)
             barre_events += count
-            # A barre chord appearing <= 2 times and < 4% of the song is an "intruder/passing" chord
-            if has_real_frequencies and share < 0.04 and count <= 2:
+            if is_known:
+                known_barre_chords.append(ch)
+            if _is_rare(count, total_events, has_real_frequencies):
                 rare_barre_chords.append(ch)
             else:
                 core_barre_chords.append(ch)
+                if is_known:
+                    known_core_barres.append(ch)
+                else:
+                    hard_barre_chords.append(ch)
+                    hard_barre_events += count
 
     has_barre = len(barre_chords) > 0
     unique_match_pct = round(((len(all_chords) - len(unknown_chords)) / len(all_chords)) * 100, 1)
@@ -291,14 +683,12 @@ def evaluate_song_difficulty(
     coverage_pts = 0.50 * weighted_known_pct
 
     # 2. Barre component (0-25 pts)
-    if not barre_chords:
-        barre_pts = 25.0
-    elif not core_barre_chords:
-        # Only rare passing barre chord(s)
-        barre_pts = 20.0
-    else:
-        penalty_multiplier = 1.0 if avoid_barre else 0.5
-        barre_pts = max(0.0, 25.0 - (len(core_barre_chords) * 11.0 + weighted_barre_pct * 0.3) * penalty_multiplier)
+    hard_barre_pct = (hard_barre_events / total_events) * 100
+    hard_penalty = (len(hard_barre_chords) * 11.0 + hard_barre_pct * 0.3) * (1.0 if avoid_barre else 0.5)
+    known_penalty = len(known_core_barres) * 3.0 if avoid_barre else 0.0
+    has_rare_unknown = any(ch not in known_barre_chords for ch in rare_barre_chords)
+    rare_penalty = 5.0 if has_rare_unknown and not core_barre_chords else 0.0
+    barre_pts = max(0.0, 25.0 - hard_penalty - known_penalty - rare_penalty)
 
     # 3. Harmonic density component (0-15 pts)
     if avg_changes_per_line <= 2.5:
@@ -319,38 +709,32 @@ def evaluate_song_difficulty(
 
     score = int(round(min(100.0, max(0.0, coverage_pts + barre_pts + density_pts + simplicity_pts))))
 
-    # Classification Rules (combining spec rules + weighted intelligence)
-    effective_barres = core_barre_chords if has_real_frequencies else barre_chords
-    effective_unknowns = core_unknown_chords if has_real_frequencies else unknown_chords
+    level = _difficulty_level(freqs, known_keys, avoid_barre)
 
-    if (
-        len(effective_barres) == 0
-        and avg_changes_per_line <= 3.8
-        and (len(all_chords) <= 4 or len(effective_unknowns) == 0 or weighted_known_pct >= 95.0)
-    ):
-        level = "Fácil"
-    elif (
-        (len(effective_barres) <= 1 and len(effective_unknowns) <= 1 and avg_changes_per_line <= 4.2)
-        or (len(effective_barres) == 0 and len(effective_unknowns) <= 2 and score >= 60)
-    ):
-        level = "Médio"
-    else:
-        level = "Difícil"
-
-    # Find if a Capo makes a Medium/Hard song Easy!
     capo_suggestion = None
-    if has_barre:
+    easy_capo = _find_easy_capo(freqs, known_keys, avoid_barre) if level != "Fácil" else None
+    if easy_capo:
+        fret, shapes = easy_capo
+        shape_names = list(shapes)
+        remaining = [ch for ch in shape_names if is_barre_chord(ch)]
+        capo_suggestion = {
+            "capo_fret": fret,
+            "transposed_chords": shape_names,
+            "remaining_barres": remaining,
+            "message": _capo_message(fret, shape_names, len(remaining)),
+            "makes_easy": True,
+        }
+    elif has_barre:
         best_capo = find_best_capo(freqs, effective_known)
         if best_capo["capo_fret"] > 0 and best_capo["barre_count"] < len(barre_chords):
             capo_suggestion = {
                 "capo_fret": best_capo["capo_fret"],
                 "transposed_chords": best_capo["transposed_chords"],
                 "remaining_barres": best_capo["barre_chords"],
-                "message": (
-                    f"Com Capotraste na {best_capo['capo_fret']}ª casa, "
-                    f"você toca usando { ', '.join(best_capo['transposed_chords'][:6]) } "
-                    f"({best_capo['barre_count']} pestanas)!"
+                "message": _capo_message(
+                    best_capo["capo_fret"], best_capo["transposed_chords"], best_capo["barre_count"]
                 ),
+                "makes_easy": False,
             }
 
     return {
@@ -359,6 +743,7 @@ def evaluate_song_difficulty(
         "barre_chords": barre_chords,
         "core_barre_chords": core_barre_chords,
         "rare_barre_chords": rare_barre_chords,
+        "known_barre_chords": known_barre_chords,
         "unknown_chords": unknown_chords,
         "known_match_pct": unique_match_pct,
         "weighted_known_pct": weighted_known_pct,
@@ -367,4 +752,5 @@ def evaluate_song_difficulty(
         "has_tabs": has_tabs,
         "score": score,
         "capo_suggestion": capo_suggestion,
+        "easy_with_capo": bool(easy_capo),
     }

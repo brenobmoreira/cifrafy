@@ -6,9 +6,8 @@ venv/
 env/
 .env
 .cache*
-data/*.db
-data/*.db-journal
-data/*.db-wal
+data/
+.spotify_token.json
 .pytest_cache/
 dist/
 build/
