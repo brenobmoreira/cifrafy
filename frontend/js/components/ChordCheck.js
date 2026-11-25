@@ -1,5 +1,5 @@
 // Experimental microphone check. Audio stays in the browser: nothing is recorded or sent.
-import { h, replaceContent } from '../dom.js';
+import { h, replaceContent, showDialog } from '../dom.js';
 import { detectChord } from '../audio/chordDetector.js';
 import { ChordDiagram } from './ChordDiagram.js';
 import { icon } from './icons.js';
@@ -32,6 +32,7 @@ function openChordCheck(chord) {
     replaceContent(actions, listening
       ? h('button', { class: 'btn btn--ghost', type: 'button', onclick: () => { stop(); status.textContent = 'Parado.'; renderActions(false); } }, 'Parar')
       : h('button', { class: 'btn btn--primary', type: 'button', onclick: listen }, icon('mic', 17), 'Ouvir'));
+    if (dialog?.open) actions.querySelector('button')?.focus();
   }
 
   function setStatus(text, tone = '') {
@@ -110,7 +111,7 @@ function openChordCheck(chord) {
   });
   renderActions(false);
   document.body.append(dialog);
-  dialog.showModal();
+  showDialog(dialog, { focus: () => actions.querySelector('button') });
 }
 
 export function ChordCheckButton(chord, { label = 'Verificar acorde' } = {}) {

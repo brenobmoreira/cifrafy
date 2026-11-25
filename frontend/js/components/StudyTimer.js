@@ -1,4 +1,4 @@
-import { h, replaceContent } from '../dom.js';
+import { h, replaceContent, showDialog } from '../dom.js';
 import { study, studyTimer } from '../study.js';
 import { formatClock, formatStudyTime, MIN_SAVE_SECONDS } from '../studyTimer.js';
 import { icon } from './icons.js';
@@ -93,6 +93,8 @@ export function StudyTimerControl({ signal } = {}) {
   function onTimerChange() {
     tick();
     renderActions();
+    // The action buttons were rebuilt: keep the keyboard inside the dialog.
+    if (dialog.open && !dialog.contains(document.activeElement)) actions.querySelector('button')?.focus();
   }
 
   const renderGoal = () => replaceContent(goalSlot, GoalProgress(study.summary));
@@ -101,7 +103,7 @@ export function StudyTimerControl({ signal } = {}) {
     renderGoal();
     onTimerChange();
     if (!dialog.isConnected) document.body.append(dialog);
-    dialog.showModal();
+    showDialog(dialog, { focus: () => actions.querySelector('button') });
     study.refresh().catch(() => {});
   }
 

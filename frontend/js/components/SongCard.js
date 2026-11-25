@@ -35,6 +35,7 @@ export function ScoreMeter(score = 0) {
       'aria-valuenow': value,
       style: { '--score': value },
     },
+    h('span', { class: 'meter__label', 'aria-hidden': 'true' }, 'Facilidade'),
     h('div', { class: 'meter__track' }, h('div', { class: 'meter__fill' })),
     h('span', { class: 'meter__value' }, value),
   );

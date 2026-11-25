@@ -20,6 +20,16 @@ except ImportError:
                 os.environ.setdefault(k.strip(), v.strip().strip("\"'"))
 
 
+def resolve_service_path(value: str) -> Path:
+    """Relative paths always start at backend/, whatever folder the server runs from."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else (SERVICE_ROOT / path).resolve()
+
+
+def _csv_env(name: str, default: str) -> list[str]:
+    return [item.strip().rstrip("/") for item in os.getenv(name, default).split(",") if item.strip()]
+
+
 class Settings:
     SPOTIFY_CLIENT_ID: str = os.getenv("SPOTIFY_CLIENT_ID") or os.getenv("SPOTIPY_CLIENT_ID", "")
     SPOTIFY_CLIENT_SECRET: str = os.getenv("SPOTIFY_CLIENT_SECRET") or os.getenv("SPOTIPY_CLIENT_SECRET", "")
@@ -36,14 +46,16 @@ class Settings:
         if c.strip()
     ]
 
-    DATABASE_PATH: Path = Path(
-        os.getenv("DATABASE_PATH", str(REPO_ROOT / "data" / "guitar.db"))
-    )
-    SPOTIFY_CACHE_PATH: str = os.getenv(
-        "SPOTIFY_CACHE_PATH", str(DATABASE_PATH.parent / ".spotify_token.json")
+    DATABASE_PATH: Path = resolve_service_path(os.getenv("DATABASE_PATH") or "data/guitar.db")
+    SPOTIFY_CACHE_PATH: str = str(
+        resolve_service_path(os.getenv("SPOTIFY_CACHE_PATH") or str(DATABASE_PATH.parent / ".spotify_token.json"))
     )
 
-    HOST: str = os.getenv("HOST", "0.0.0.0")
+    # Browser origins allowed to call the API, and Host headers the server answers to.
+    ALLOWED_ORIGINS: list[str] = _csv_env("ALLOWED_ORIGINS", "http://127.0.0.1:3000,http://localhost:3000")
+    ALLOWED_HOSTS: list[str] = _csv_env("ALLOWED_HOSTS", "127.0.0.1,localhost")
+
+    HOST: str = os.getenv("HOST", "127.0.0.1")
     PORT: int = int(os.getenv("PORT", "8000"))
 
 

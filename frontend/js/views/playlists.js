@@ -2,6 +2,7 @@ import { api } from '../api.js';
 import { formatDuration, h, plural, replaceContent } from '../dom.js';
 import { songPath } from '../router.js';
 import { store } from '../store.js';
+import { syncQueue, trackKey } from '../syncQueue.js';
 import { icon } from '../components/icons.js';
 import { LevelBadge } from '../components/SongCard.js';
 import { EmptyState, ErrorState, Skeleton, Strings, toast } from '../components/states.js';
@@ -133,6 +134,7 @@ const MAX_BATCH = 15;
 const ROW_STATUS = {
   running: 'Analisando',
   queued: 'Na fila',
+  pending: 'Pendente',
   synced: 'Salva',
   cached: 'Já salva',
   not_found: 'Cifra não encontrada',
@@ -143,11 +145,10 @@ const ROW_STATUS = {
 export function PlaylistDetailView({ params, signal }) {
   const playlistId = params.id;
   let tracks = [];
-  let syncing = false;
   let cooldownTimer = null;
-  let cooldownUntil = 0;
+  let cooling = false;
+  let lastRunningKey = null;
   const selected = new Set();
-  const rowStatus = new Map();
   const rows = [];
 
   const body = h('div', {}, Skeleton({ count: 8, variant: 'row' }));
@@ -155,28 +156,37 @@ export function PlaylistDetailView({ params, signal }) {
   const summary = h('p', { class: 'page-sub' });
   const bannerSlot = h('div');
   const progressFill = h('div', { class: 'sync-progress__fill' });
-  const progressText = h('span', { class: 'sync-bar__text', role: 'status' });
+  const progressText = h('span', { class: 'sync-bar__text' });
   const syncButton = h('button', { class: 'btn btn--primary', type: 'button', onclick: runSync }, 'Analisar e salvar');
   const progress = h('div', { class: 'sync-progress', 'aria-hidden': 'true' }, progressFill);
   const bar = h('div', { class: 'sync-bar', hidden: true }, progress,
     h('div', { class: 'sync-bar__row' }, progressText, syncButton));
 
-  const trackKey = (track, index) => track.track_id || `${track.artist}:${track.name}:${index}`;
-  const inCooldown = () => cooldownUntil > Date.now();
+  const rowState = (index) => syncQueue.statusFor(playlistId, trackKey(tracks[index], index));
+  const running = () => syncQueue.isRunning(playlistId);
+  const blocked = () => syncQueue.active || syncQueue.cooldownRemaining() > 0;
 
   function updateBar() {
-    bar.hidden = selected.size === 0 && !syncing;
-    if (!syncing) {
+    const isRunning = running();
+    bar.hidden = selected.size === 0 && !isRunning;
+    if (isRunning) {
+      const { done, total, current } = syncQueue.progress();
+      progressFill.style.width = `${total ? (done / total) * 100 : 0}%`;
+      progressText.textContent = `${Math.min(done + 1, total)} de ${total}${current ? `: ${current.track.name}` : ''}`;
+    } else {
       progressFill.style.width = '0%';
-      progressText.textContent = `${plural(selected.size, 'selecionada')} (máximo ${MAX_BATCH})`;
+      progressText.textContent = syncQueue.active
+        ? 'Outra playlist está sendo analisada'
+        : `${plural(selected.size, 'selecionada')} (máximo ${MAX_BATCH})`;
     }
-    syncButton.disabled = syncing || selected.size === 0 || inCooldown();
-    syncButton.textContent = syncing ? 'Analisando' : 'Analisar e salvar';
+    // aria-disabled keeps keyboard focus on the button while the batch runs.
+    syncButton.setAttribute('aria-disabled', String(blocked() || selected.size === 0));
+    syncButton.textContent = isRunning ? 'Analisando' : 'Analisar e salvar';
   }
 
   function badgeFor(index) {
     const track = tracks[index];
-    const state = rowStatus.get(trackKey(track, index));
+    const state = rowState(index);
     if (state && state !== 'synced' && state !== 'cached') {
       return h('span', { class: `track-state track-state--${state}` }, ROW_STATUS[state]);
     }
@@ -193,18 +203,21 @@ export function PlaylistDetailView({ params, signal }) {
     if (!row) return;
     const track = tracks[index];
     row.checkbox.checked = selected.has(index);
-    row.checkbox.disabled = Boolean(track.is_synced) || syncing;
+    row.checkbox.disabled = Boolean(track.is_synced) || syncQueue.active;
     row.el.classList.toggle('track--selected', selected.has(index));
     row.el.classList.toggle('track--done', Boolean(track.is_synced));
-    row.el.classList.toggle('track--running', rowStatus.get(trackKey(track, index)) === 'running');
+    row.el.classList.toggle('track--running', rowState(index) === 'running');
     replaceContent(row.state, badgeFor(index));
-    replaceContent(row.open, track.is_synced
-      ? h('a', {
-          class: 'icon-btn icon-btn--brass',
-          href: songPath(track.artist, track.name),
-          'aria-label': `Abrir ${track.name}`,
-        }, icon('play', 18))
-      : null);
+    // Only rebuilt when it changes, so a focused link is not lost during the sync.
+    if (Boolean(track.is_synced) !== (row.open.childElementCount > 0)) {
+      replaceContent(row.open, track.is_synced
+        ? h('a', {
+            class: 'icon-btn icon-btn--brass',
+            href: songPath(track.artist, track.name),
+            'aria-label': `Abrir ${track.name}`,
+          }, icon('play', 18))
+        : null);
+    }
   }
 
   function updateSummary() {
@@ -231,6 +244,7 @@ export function PlaylistDetailView({ params, signal }) {
   }
 
   function selectNext() {
+    if (syncQueue.active) return;
     selected.clear();
     tracks.some((track, index) => {
       if (!track.is_synced) selected.add(index);
@@ -240,49 +254,68 @@ export function PlaylistDetailView({ params, signal }) {
   }
 
   function clearSelection() {
+    if (syncQueue.active) return;
     selected.clear();
     refreshAll();
   }
 
-  function startCooldown(seconds) {
-    clearInterval(cooldownTimer);
-    if (!seconds || seconds <= 0) {
-      cooldownUntil = 0;
-      replaceContent(bannerSlot, h('div', { class: 'banner banner--wait', role: 'status' },
-        h('b', {}, 'O Cifra Club pediu uma pausa.'), ' Tente de novo em alguns minutos.'));
-      updateBar();
-      return;
-    }
-    cooldownUntil = Date.now() + seconds * 1000;
-    const label = h('strong', { class: 'cooldown__time' });
-    const tick = () => {
-      const remaining = (cooldownUntil - Date.now()) / 1000;
-      if (remaining <= 0) {
-        clearInterval(cooldownTimer);
-        cooldownUntil = 0;
-        replaceContent(bannerSlot, h('div', { class: 'banner banner--ok', role: 'status' },
-          'O Cifra Club está liberado. Você pode continuar de onde parou.'));
-        updateBar();
-        return;
+  // Rebuilds rows and selection from the queue, which outlives this view.
+  function applyBatch() {
+    const batch = syncQueue.batchFor(playlistId);
+    if (!batch || !tracks.length) return;
+    for (const item of batch.items) {
+      let index = item.index;
+      if (!tracks[index] || trackKey(tracks[index], index) !== item.key) {
+        index = tracks.findIndex((track, position) => trackKey(track, position) === item.key);
       }
-      label.textContent = formatDuration(remaining);
-    };
-    replaceContent(bannerSlot, h('div', { class: 'banner banner--wait', role: 'status' },
-      h('div', {}, h('b', {}, 'O Cifra Club pediu uma pausa.'), ' As músicas restantes continuam selecionadas.'),
-      h('p', { class: 'cooldown' }, 'Tente de novo em ', label)));
-    tick();
-    cooldownTimer = setInterval(tick, 1000);
-    updateBar();
+      if (index < 0) continue;
+      if (item.result) tracks[index] = { ...tracks[index], ...item.result };
+      const keepSelected = ['queued', 'running', 'pending', 'rate_limited'].includes(item.status) || item.retry;
+      if (keepSelected) selected.add(index);
+      else selected.delete(index);
+    }
   }
 
-  async function finishSync(counts) {
-    if (counts.saved) toast(`${plural(counts.saved, 'música salva', 'músicas salvas')} no banco local.`, 'ok');
-    if (counts.failed) toast(`${plural(counts.failed, 'música')} sem cifra disponível.`, 'error');
-    store.refreshStatus(signal).catch(() => {});
+  function renderCooldown() {
+    const remaining = syncQueue.cooldownRemaining();
+    clearInterval(cooldownTimer);
+    if (remaining > 0) {
+      cooling = true;
+      const label = h('strong', { class: 'cooldown__time', role: 'timer' });
+      const tick = () => { label.textContent = formatDuration(syncQueue.cooldownRemaining()); };
+      replaceContent(bannerSlot, h('div', { class: 'banner banner--wait' },
+        h('div', {}, h('b', {}, 'O Cifra Club pediu uma pausa.'), ' As músicas restantes continuam selecionadas.'),
+        h('p', { class: 'cooldown' }, 'Tente de novo em ', label)));
+      tick();
+      cooldownTimer = setInterval(tick, 1000);
+    } else if (syncQueue.pausedWithoutTime) {
+      replaceContent(bannerSlot, h('div', { class: 'banner banner--wait' },
+        h('b', {}, 'O Cifra Club pediu uma pausa.'), ' Tente de novo em alguns minutos.'));
+    } else if (cooling) {
+      cooling = false;
+      replaceContent(bannerSlot, h('div', { class: 'banner banner--ok' },
+        'O Cifra Club está liberado. Você pode continuar de onde parou.'));
+    }
+  }
+
+  function onQueueChange() {
+    applyBatch();
+    refreshAll();
+    renderCooldown();
+    const current = running() ? syncQueue.progress().current : null;
+    if (current && current.key !== lastRunningKey) {
+      lastRunningKey = current.key;
+      rows[current.index]?.el.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  async function reloadAfterBatch(_counts, batch) {
+    if (batch?.playlistId !== playlistId) return;
     try {
       const fresh = await api.playlistTracks(playlistId, { simplified: store.prefs.simplified, signal });
-      if (fresh.length === tracks.length && !syncing) {
+      if (fresh.length === tracks.length && !syncQueue.active) {
         tracks = fresh;
+        applyBatch();
         refreshAll();
       }
     } catch {
@@ -290,67 +323,15 @@ export function PlaylistDetailView({ params, signal }) {
     }
   }
 
-  async function runSync() {
-    if (syncing || !selected.size || inCooldown()) return;
-    syncing = true;
-    const queue = [...selected].sort((a, b) => a - b);
-    queue.forEach((index) => rowStatus.set(trackKey(tracks[index], index), 'queued'));
-    refreshAll();
-
-    let done = 0;
-    const counts = { saved: 0, failed: 0 };
-    for (const [position, index] of queue.entries()) {
-      if (signal.aborted) return;
-      const track = tracks[index];
-      const key = trackKey(track, index);
-      rowStatus.set(key, 'running');
-      refreshRow(index);
-      progressText.textContent = `${position + 1} de ${queue.length}: ${track.name}`;
-      rows[index]?.el.scrollIntoView({ block: 'nearest' });
-
-      let response;
-      try {
-        response = await api.syncTracks(
-          [{ track_id: track.track_id || null, artist: track.artist, name: track.name }],
-          { simplified: store.prefs.simplified, avoidBarre: store.profile.avoid_barre },
-        );
-      } catch (error) {
-        if (signal.aborted) return;
-        rowStatus.set(key, 'error');
-        queue.slice(position + 1).forEach((rest) => rowStatus.delete(trackKey(tracks[rest], rest)));
-        toast(error.message, 'error');
-        break;
-      }
-      if (signal.aborted) return;
-
-      const result = response.results?.[0];
-      const status = result?.status || 'error';
-      rowStatus.set(key, status);
-
-      if (status === 'rate_limited') {
-        queue.slice(position + 1).forEach((rest) => rowStatus.delete(trackKey(tracks[rest], rest)));
-        syncing = false;
-        startCooldown(result.retry_after_seconds ?? response.retry_after_seconds);
-        refreshAll();
-        await finishSync(counts);
-        return;
-      }
-
-      if (status === 'synced' || status === 'cached') {
-        tracks[index] = { ...track, ...result, artist: track.artist, name: track.name };
-        counts.saved += 1;
-      } else {
-        counts.failed += 1;
-      }
-      selected.delete(index);
-      done += 1;
-      progressFill.style.width = `${(done / queue.length) * 100}%`;
-      refreshRow(index);
-    }
-
-    syncing = false;
-    refreshAll();
-    await finishSync(counts);
+  function runSync() {
+    if (blocked() || !selected.size) return;
+    syncQueue.start({
+      playlistId,
+      playlistName: title.textContent,
+      simplified: store.prefs.simplified,
+      avoidBarre: store.profile.avoid_barre,
+      selections: [...selected].sort((a, b) => a - b).map((index) => ({ index, track: tracks[index] })),
+    });
   }
 
   function TrackRow(track, index) {
@@ -381,10 +362,10 @@ export function PlaylistDetailView({ params, signal }) {
       class: 'segment',
       'aria-pressed': store.prefs.simplified === value,
       onclick: () => {
-        if (syncing || store.prefs.simplified === value) return;
+        if (syncQueue.active || store.prefs.simplified === value) return;
         store.setPrefs({ simplified: value });
         modeButtons.forEach((button, i) => button.setAttribute('aria-pressed', String((i === 1) === value)));
-        rowStatus.clear();
+        syncQueue.clearFinished(playlistId);
         selected.clear();
         load();
       },
@@ -413,18 +394,26 @@ export function PlaylistDetailView({ params, signal }) {
             `Próximas ${MAX_BATCH} pendentes`),
           h('button', { class: 'btn btn--quiet btn--small', type: 'button', onclick: clearSelection }, 'Limpar')),
         h('ol', { class: 'track-list' }, tracks.map(TrackRow)));
+      applyBatch();
       refreshAll();
     } catch (error) {
       if (error.name !== 'AbortError') replaceContent(body, ErrorState({ error, onRetry: load }));
     }
   }
 
-  signal.addEventListener('abort', () => clearInterval(cooldownTimer));
+  const unsubscribeQueue = syncQueue.subscribe(onQueueChange);
+  const unsubscribeFinish = syncQueue.onFinish(reloadAfterBatch);
+  signal.addEventListener('abort', () => {
+    clearInterval(cooldownTimer);
+    unsubscribeQueue();
+    unsubscribeFinish();
+  });
   store.refreshStatus(signal)
     .then((status) => {
-      if (status.cifraclub_cooldown_seconds > 0) startCooldown(status.cifraclub_cooldown_seconds);
+      if (status.cifraclub_cooldown_seconds > 0) syncQueue.setCooldown(status.cifraclub_cooldown_seconds);
     })
     .catch(() => {});
+  renderCooldown();
   load();
 
   return h(

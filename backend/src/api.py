@@ -11,6 +11,7 @@ from typing import Any, Literal
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -50,11 +51,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Accept", "Authorization", "Mcp-Session-Id", "Mcp-Protocol-Version", "Last-Event-ID"],
+    expose_headers=["Mcp-Session-Id"],
 )
+# Added last so it runs first, also for /mcp. Blocks DNS rebinding from malicious sites.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
 
 # Mount MCP directly at /mcp inside the same FastAPI service!
 app.mount("/mcp", mcp_http_app)

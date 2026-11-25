@@ -3,7 +3,11 @@ import { parseChord } from '../chords.js';
 
 const MIN_HZ = 70;
 const MAX_HZ = 1600;
-const SILENCE_DB = -62;
+// AnalyserNode scales by 1/fftSize, so a normal strum peaks around -60 dB and quiet playing near -75 dB.
+// Room noise up to about -45 dBFS stays under -85 dB per bin.
+const SILENCE_DB = -80;
+// Peaks this far below the loudest one are left out, whatever the input level.
+const PEAK_RANGE_DB = 30;
 const MATCH_THRESHOLD = 0.78;
 const MATCH_MARGIN = 0.04;
 const NOTE_NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
@@ -31,7 +35,8 @@ export function chordNotes(name) {
   if (/sus2/.test(ext)) third = 2;
   else if (/sus4?|^4|\(4\)/.test(ext)) third = 5;
 
-  const intervals = new Set([0, third, fifth]);
+  // Power chord (E5): root and fifth only.
+  const intervals = /^5$/.test(ext) && !quality ? new Set([0, 7]) : new Set([0, third, fifth]);
   if (/7M|maj7|M7|7\+/.test(ext)) intervals.add(11);
   else if (/7/.test(ext)) intervals.add(['dim', '°', 'º'].includes(quality) ? 9 : 10);
   if (/(^|[^0-9])6/.test(ext)) intervals.add(9);
@@ -50,12 +55,15 @@ export function spectrumToChroma(spectrum, { sampleRate, fftSize }) {
   const last = Math.min(spectrum.length - 2, Math.floor(MAX_HZ / binHz));
   const chroma = new Array(12).fill(0);
   let loudest = -Infinity;
+  for (let bin = first; bin <= last; bin += 1) {
+    if (spectrum[bin] > loudest) loudest = spectrum[bin];
+  }
+  const floor = loudest - PEAK_RANGE_DB;
 
   for (let bin = first; bin <= last; bin += 1) {
     const db = spectrum[bin];
     if (!Number.isFinite(db)) continue;
-    if (db > loudest) loudest = db;
-    if (db < SILENCE_DB || db < spectrum[bin - 1] || db < spectrum[bin + 1]) continue;
+    if (db < floor || db < spectrum[bin - 1] || db < spectrum[bin + 1]) continue;
     const hz = bin * binHz;
     const midi = 69 + 12 * Math.log2(hz / 440);
     const pitchClass = ((Math.round(midi) % 12) + 12) % 12;
@@ -81,11 +89,15 @@ export function matchChroma(chroma, expected) {
   if (!expectedNotes) return { detected: null, confidence: 0, match: false };
   const expectedScore = similarity(chroma, expectedNotes);
   let best = { name: expected, score: expectedScore };
+  let rival = 0;
   for (const template of COMMON_TEMPLATES) {
     const score = similarity(chroma, template.notes);
     if (score > best.score + 1e-9) best = { name: template.name, score };
+    // A triad inside the expected chord (C in C7M) may score a bit higher; any other chord may not.
+    const inside = template.notes.every((note) => expectedNotes.includes(note));
+    rival = Math.max(rival, inside ? score - MATCH_MARGIN : score);
   }
-  const match = expectedScore >= MATCH_THRESHOLD && expectedScore >= best.score - MATCH_MARGIN;
+  const match = expectedScore >= MATCH_THRESHOLD && expectedScore >= rival - 1e-9;
   return {
     detected: match ? expected : best.name,
     confidence: Math.round(Math.min(1, match ? expectedScore : best.score) * 100) / 100,

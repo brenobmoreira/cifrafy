@@ -56,7 +56,7 @@ flowchart LR
 
 ## 3. Modelagem do Banco de Dados (SQLite / PostgreSQL Ready)
 
-A estrutura abaixo foi desenhada em SQL padrão para rodar em **SQLite** (arquivo único em `./data/guitar.db` mapeado por volume no Docker) e poder migrar para PostgreSQL sem mudar uma linha de código se um dia virar SaaS:
+A estrutura abaixo foi desenhada em SQL padrão para rodar em **SQLite** (arquivo único em `backend/data/guitar.db` mapeado por volume no Docker) e poder migrar para PostgreSQL sem mudar uma linha de código se um dia virar SaaS:
 
 ### Tabela 1: `song_index` (Catálogo Leve & Permanente — ~200 bytes/música)
 Guarda a anatomia harmônica da música. **Não depende do nível do usuário** (pois a música em si não muda quando você aprende um acorde novo).

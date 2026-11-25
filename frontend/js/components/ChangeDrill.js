@@ -1,6 +1,6 @@
 // One-minute chord change drill. Hands stay on the guitar, so the count is entered at the end.
 import { api } from '../api.js';
-import { h, replaceContent } from '../dom.js';
+import { h, replaceContent, showDialog } from '../dom.js';
 import { createMetronome } from '../metronome.js';
 import { store } from '../store.js';
 import { ChordDiagram } from './ChordDiagram.js';
@@ -21,6 +21,7 @@ export function openChangeDrill(change, { signal, onSaved }) {
   let useClick = store.prefs.drillClick ?? true;
   let interval = null;
   let wakeLock = null;
+  let phase = 'setup';
 
   const metronome = createMetronome();
   const body = h('div', { class: 'drill__body' });
@@ -47,14 +48,17 @@ export function openChangeDrill(change, { signal, onSaved }) {
     return { clock, value };
   }
 
+  const focusAction = () => body.querySelector('[data-focus]')?.focus();
+
   function renderSetup() {
+    phase = 'setup';
     const durationButtons = DURATIONS.map((option) =>
       h('button', {
         class: 'segment', type: 'button', 'aria-pressed': option === seconds,
         onclick: () => {
           seconds = option;
           store.setPrefs({ drillSeconds: option });
-          renderSetup();
+          durationButtons.forEach((button, index) => button.setAttribute('aria-pressed', String(DURATIONS[index] === option)));
         },
       }, `${option}s`));
 
@@ -84,7 +88,8 @@ export function openChangeDrill(change, { signal, onSaved }) {
           h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Diminuir andamento', onclick: () => changeBpm(-5) }, icon('minus', 18)),
           bpmValue,
           h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Aumentar andamento', onclick: () => changeBpm(5) }, icon('plus', 18)))),
-      h('button', { class: 'btn btn--primary drill__main', type: 'button', onclick: begin }, icon('play', 18), 'Começar'));
+      h('button', { class: 'btn btn--primary drill__main', type: 'button', dataset: { focus: '1' }, onclick: begin }, icon('play', 18), 'Começar'));
+    focusAction();
   }
 
   async function begin() {
@@ -92,7 +97,9 @@ export function openChangeDrill(change, { signal, onSaved }) {
     keepScreenOn();
     const { clock, value } = Clock(String(COUNT_IN_SECONDS));
     replaceContent(body, clock, h('p', { class: 'drill__hint' }, 'Posicione a mão no primeiro acorde'),
-      h('button', { class: 'btn btn--ghost drill__main', type: 'button', onclick: cancel }, 'Cancelar'));
+      h('button', { class: 'btn btn--ghost drill__main', type: 'button', dataset: { focus: '1' }, onclick: cancel }, 'Cancelar'));
+    phase = 'running';
+    focusAction();
 
     const startedAt = performance.now();
     interval = setInterval(() => {
@@ -110,7 +117,8 @@ export function openChangeDrill(change, { signal, onSaved }) {
     const { clock, value } = Clock(String(seconds));
     clock.classList.add('is-running');
     replaceContent(body, clock, h('p', { class: 'drill__hint' }, `${change.from} e ${change.to}, sem parar`),
-      h('button', { class: 'btn btn--ghost drill__main', type: 'button', onclick: cancel }, 'Cancelar'));
+      h('button', { class: 'btn btn--ghost drill__main', type: 'button', dataset: { focus: '1' }, onclick: cancel }, 'Cancelar'));
+    focusAction();
 
     if (useClick) metronome.start(bpm);
     const endsAt = performance.now() + seconds * 1000;
@@ -133,6 +141,7 @@ export function openChangeDrill(change, { signal, onSaved }) {
   }
 
   function renderCount() {
+    phase = 'count';
     let count = clamp(Math.round(((change.last_per_minute ?? 0) * seconds) / 60), 0, MAX_COUNT);
     const input = h('input', {
       id: 'drill-count', class: 'input drill-count__input', type: 'number', inputMode: 'numeric',
@@ -176,10 +185,12 @@ export function openChangeDrill(change, { signal, onSaved }) {
         h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Mais uma troca', onclick: () => adjust(1) }, icon('plus', 20))),
       feedback,
       save);
+    input.focus();
     input.select();
   }
 
   async function renderResult(result) {
+    phase = 'result';
     const perMinute = result.session.per_minute;
     const target = change.target_per_minute || 30;
     let recent = [];
@@ -201,8 +212,9 @@ export function openChangeDrill(change, { signal, onSaved }) {
         recent.length > 1 && h('p', { class: 'drill-result__history' },
           `Últimos treinos: ${recent.map(formatRate).join(', ')}`)),
       h('div', { class: 'drill__actions' },
-        h('button', { class: 'btn btn--primary', type: 'button', onclick: renderSetup }, 'Treinar de novo'),
+        h('button', { class: 'btn btn--primary', type: 'button', dataset: { focus: '1' }, onclick: renderSetup }, 'Treinar de novo'),
         h('button', { class: 'btn btn--ghost', type: 'button', onclick: () => dialog.close() }, 'Fechar')));
+    focusAction();
   }
 
   const dialog = h('dialog', { class: 'drill', 'aria-label': `Treino de troca entre ${change.from} e ${change.to}` },
@@ -218,6 +230,13 @@ export function openChangeDrill(change, { signal, onSaved }) {
     body);
 
   const close = () => dialog.close();
+  // Esc must not throw away a count that was not saved yet.
+  dialog.addEventListener('cancel', (event) => {
+    if (phase === 'count') {
+      event.preventDefault();
+      toast('Salve o resultado ou use o botão Fechar.', 'info');
+    }
+  });
   dialog.addEventListener('close', () => {
     stopClock();
     metronome.close();
@@ -228,7 +247,7 @@ export function openChangeDrill(change, { signal, onSaved }) {
 
   renderSetup();
   document.body.append(dialog);
-  dialog.showModal();
+  showDialog(dialog, { focus: focusAction });
 }
 
 export function formatRate(value) {

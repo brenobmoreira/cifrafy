@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import time
 import unicodedata
 import weakref
@@ -20,7 +21,7 @@ from urllib.parse import urlparse
 import httpx
 from bs4 import BeautifulSoup
 
-from src.core.analyzer import evaluate_song_difficulty, find_best_capo, is_barre_chord
+from src.core.analyzer import clean_sheet_text, evaluate_song_difficulty, find_best_capo, is_barre_chord
 from src.db import db
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ SOLR_URL = "https://solr.sscdn.co/cc/h2/"
 SIMPLIFIED_SUFFIX = "__simplificada"
 MAX_NEW_LOOKUPS_PER_BATCH = 15
 SOLR_TITLE_MIN_SIMILARITY = 0.82
+COOLDOWN_STATE_KEY = "cifraclub_blocked_until"
 
 # Qualifiers that describe a release rather than the song. "live" only counts when it stands
 # alone or introduces a venue, so titles such as "Live Forever" survive.
@@ -98,23 +100,45 @@ def _parse_retry_after(value: str | None) -> float | None:
 
 
 class CifraClubLimiter:
-    """Process-wide limiter: one request at a time, spaced, with a cooldown after 403/429."""
+    """Process-wide limiter: one request at a time, spaced, with a cooldown after 403/429.
+
+    The cooldown end is a wall-clock time stored in SQLite, so a server restart cannot clear it.
+    """
 
     def __init__(self, min_interval: float, default_cooldown: float) -> None:
         self.min_interval = min_interval
         self.default_cooldown = default_cooldown
-        self._blocked_until = 0.0
+        self._blocked_until = self._load_blocked_until()
         self._last_request_at = 0.0
         self._locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
             weakref.WeakKeyDictionary()
         )
 
+    @staticmethod
+    def _load_blocked_until() -> float:
+        try:
+            stored = db.get_service_value(COOLDOWN_STATE_KEY)
+        except sqlite3.Error as exc:
+            logger.warning("Não foi possível ler o cooldown salvo: %s", exc)
+            return 0.0
+        return stored if stored and stored > time.time() else 0.0
+
+    def _save_blocked_until(self) -> None:
+        try:
+            db.set_service_value(COOLDOWN_STATE_KEY, self._blocked_until)
+        except sqlite3.Error as exc:
+            logger.warning("Não foi possível salvar o cooldown: %s", exc)
+
     def reset(self) -> None:
         self._blocked_until = 0.0
         self._last_request_at = 0.0
+        try:
+            db.delete_service_value(COOLDOWN_STATE_KEY)
+        except sqlite3.Error as exc:
+            logger.warning("Não foi possível limpar o cooldown: %s", exc)
 
     def cooldown_remaining(self) -> int:
-        return max(math.ceil(self._blocked_until - time.monotonic()), 0)
+        return max(math.ceil(self._blocked_until - time.time()), 0)
 
     async def get(self, client: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
         loop = asyncio.get_running_loop()
@@ -135,7 +159,8 @@ class CifraClubLimiter:
             if response.status_code in (403, 429):
                 retry_after = _parse_retry_after(response.headers.get("Retry-After"))
                 cooldown = retry_after if retry_after else self.default_cooldown
-                self._blocked_until = max(self._blocked_until, time.monotonic() + cooldown)
+                self._blocked_until = max(self._blocked_until, time.time() + cooldown)
+                self._save_blocked_until()
                 logger.warning(
                     "Cifra Club respondeu %s. Novas buscas pausadas por %.0fs.",
                     response.status_code,
@@ -310,7 +335,7 @@ def parse_cifraclub_html(html: str, url: str) -> dict[str, Any] | None:
         if ch and re.match(r"^[A-G][#b]?", ch):
             chord_frequencies[ch] = chord_frequencies.get(ch, 0) + 1
 
-    raw_sheet = pre.get_text()
+    raw_sheet = clean_sheet_text(pre.get_text())
     if not chord_frequencies and not raw_sheet.strip():
         return None
 
@@ -433,6 +458,13 @@ def find_cached_song(
         )
         if song:
             return song
+        # The Cifra Club URL can differ from the title ("que-pais-e-esse" for "Que País É Este").
+        for row in db.songs_by_artist_slugs(artist_slugs):
+            if (
+                row["track_slug"].endswith(SIMPLIFIED_SUFFIX) == variant
+                and slugify(clean_track_name(row["track_name"])) == track_slug
+            ):
+                return db.get_song_by_slugs(row["artist_slug"], row["track_slug"], include_sheet=include_sheet)
     return None
 
 

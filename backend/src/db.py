@@ -24,6 +24,8 @@ from src.core.analyzer import extract_chord_sequence
 logger = logging.getLogger(__name__)
 
 SIMPLIFIED_SUFFIX = "__simplificada"
+CHORD_SEQUENCE_VERSION_KEY = "chord_sequence_version"
+CHORD_SEQUENCE_VERSION = 2
 
 # A simplified row is hidden when the normal version of the same song is also indexed.
 _VISIBLE_SONG_SQL = f"""
@@ -174,6 +176,11 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_study_date ON study_sessions(local_date);
 
+                CREATE TABLE IF NOT EXISTS service_state (
+                    key TEXT PRIMARY KEY,
+                    value REAL NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS study_settings (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     goal_minutes INTEGER NOT NULL DEFAULT 20
@@ -205,14 +212,23 @@ class Database:
 
     @staticmethod
     def _backfill_chord_sequences(conn: sqlite3.Connection) -> None:
-        """Extract sequences from sheets already stored. One bad sheet never blocks startup."""
+        """Extract sequences from sheets already stored. One bad sheet never blocks startup.
+
+        Bump CHORD_SEQUENCE_VERSION when the extraction rules change to redo every stored sheet.
+        """
+        saved = conn.execute("SELECT value FROM service_state WHERE key = ?", (CHORD_SEQUENCE_VERSION_KEY,)).fetchone()
+        redo_all = saved is None or saved["value"] < CHORD_SEQUENCE_VERSION
         rows = conn.execute(
-            """
+            f"""
             SELECT s.id, c.compressed_sheet
             FROM song_index s JOIN chord_sheets_cache c ON c.song_id = s.id
-            WHERE s.chord_sequence_json IS NULL
+            {"" if redo_all else "WHERE s.chord_sequence_json IS NULL"}
             """
         ).fetchall()
+        conn.execute(
+            "INSERT INTO service_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (CHORD_SEQUENCE_VERSION_KEY, CHORD_SEQUENCE_VERSION),
+        )
         for row in rows:
             try:
                 sheet = zlib.decompress(row["compressed_sheet"]).decode("utf-8")
@@ -522,6 +538,18 @@ class Database:
             found = (row["artist_slug"], row["track_slug"])
         return self.get_song_by_slugs(*found, include_sheet=include_sheet)
 
+    def songs_by_artist_slugs(self, artist_slugs: list[str]) -> list[dict[str, str]]:
+        """Slugs and display names of the indexed songs of an artist, for name based lookup."""
+        if not artist_slugs:
+            return []
+        marks = ",".join("?" * len(artist_slugs))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT artist_slug, track_slug, track_name FROM song_index WHERE artist_slug IN ({marks})",
+                artist_slugs,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def count_indexed_songs(self) -> int:
         with self.connect() as conn:
             row = conn.execute(
@@ -748,6 +776,27 @@ class Database:
                 (chord_a, chord_b, limit),
             ).fetchall()
         return [dict(r) for r in reversed(rows)]
+
+    # --- Service State ---
+
+    def get_service_value(self, key: str) -> float | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM service_state WHERE key = ?", (key,)).fetchone()
+            return float(row["value"]) if row else None
+
+    def set_service_value(self, key: str, value: float) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO service_state (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )
+
+    def delete_service_value(self, key: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM service_state WHERE key = ?", (key,))
 
     @staticmethod
     def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

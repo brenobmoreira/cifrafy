@@ -34,6 +34,17 @@ Também é possível usar `docker compose up --build`.
 - API: `http://127.0.0.1:8000/docs`
 - MCP: `http://127.0.0.1:8000/mcp/`
 
+Por padrão, site e API só aceitam conexões deste computador. O banco fica em `backend/data/guitar.db`.
+
+Para abrir no celular pela rede local, inclua o IP do computador no `.env` e suba com `CIFRAFY_HOST=0.0.0.0 ./dev.sh`:
+
+```env
+ALLOWED_ORIGINS="http://127.0.0.1:3000,http://localhost:3000,http://SEU_IP:3000"
+ALLOWED_HOSTS="127.0.0.1,localhost,SEU_IP"
+```
+
+Nesse modo, qualquer pessoa na mesma rede pode usar o app, porque ele não tem login. O microfone não funciona por IP em HTTP, pois o navegador exige HTTPS ou `127.0.0.1`.
+
 No painel do Spotify, registre o redirect `http://127.0.0.1:8000/api/spotify/callback`. O Spotify não aceita `localhost`.
 
 ## Testes

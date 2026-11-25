@@ -1,9 +1,11 @@
-import { h } from './dom.js';
+import { h, plural } from './dom.js';
 import { createRouter } from './router.js';
 import { store } from './store.js';
 import { study } from './study.js';
+import { syncQueue } from './syncQueue.js';
 import { icon } from './components/icons.js';
 import { StudyTimerControl } from './components/StudyTimer.js';
+import { SyncIndicator } from './components/SyncIndicator.js';
 import { toast } from './components/states.js';
 import { ChordsView } from './views/chords.js';
 import { PlayerView } from './views/player.js';
@@ -69,7 +71,7 @@ function start() {
     h('header', { class: 'app-header' },
       Brand(),
       h('nav', { class: 'nav', 'aria-label': 'Principal' }, navLinks),
-      h('div', { class: 'header-tools' }, StudyTimerControl(), indexed)),
+      h('div', { class: 'header-tools' }, SyncIndicator(), StudyTimerControl(), indexed)),
     outlet,
   );
 
@@ -92,9 +94,18 @@ function start() {
     },
   });
 
+  syncQueue.onFinish(({ saved, failed, errorMessage }) => {
+    if (saved) toast(`${plural(saved, 'música salva', 'músicas salvas')} no banco local.`, 'ok');
+    if (failed) toast(`${plural(failed, 'música')} sem cifra disponível.`, 'error');
+    if (errorMessage) toast(errorMessage, 'error');
+  });
+
   handleSpotifyReturn();
   study.refresh().catch(() => {});
   store.refreshStatus()
+    .then((status) => {
+      if (status.cifraclub_cooldown_seconds > 0) syncQueue.setCooldown(status.cifraclub_cooldown_seconds);
+    })
     .catch(() => {})
     .finally(() => router.start());
 }

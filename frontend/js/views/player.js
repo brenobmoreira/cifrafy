@@ -1,9 +1,10 @@
 import { api } from '../api.js';
-import { formatDuration, h, prefersReducedMotion, replaceContent } from '../dom.js';
+import { formatDuration, h, prefersReducedMotion, replaceContent, showDialog } from '../dom.js';
 import { normalizeSemitones, parseChord, splitToken, transposeKey } from '../chords.js';
 import { store } from '../store.js';
 import { studyTimer } from '../study.js';
 import { ChordCheckButton } from '../components/ChordCheck.js';
+import { SyncIndicator } from '../components/SyncIndicator.js';
 import { ChordDiagram } from '../components/ChordDiagram.js';
 import { StudyTimerControl } from '../components/StudyTimer.js';
 import { chordChipClass, LevelBadge, REPERTOIRE_LABELS, ScoreMeter } from '../components/SongCard.js';
@@ -122,9 +123,11 @@ export function PlayerView({ params, signal }) {
     'aria-label': 'Status no repertório',
     hidden: true,
   }, statusButtons);
-  const modeButtons = [['original', 'Original'], ['mine', 'Minha versão']].map(([value, label]) =>
+  // One choice for what is on the stand: the site's two versions, or the arrangement adapted to the user.
+  const currentMode = () => (state.mode === 'mine' ? 'mine' : state.simplified ? 'simple' : 'original');
+  const modeButtons = [['original', 'Original'], ['simple', 'Simplificada'], ['mine', 'Minha versão']].map(([value, label]) =>
     h('button', {
-      type: 'button', class: 'segment', dataset: { value }, 'aria-pressed': value === state.mode,
+      type: 'button', class: 'segment', dataset: { value }, 'aria-pressed': value === currentMode(),
       onclick: () => setMode(value),
     }, label));
   const modeGroup = h('div', { class: 'segmented segmented--compact player-mode', role: 'group', 'aria-label': 'Versão para tocar' }, modeButtons);
@@ -149,18 +152,6 @@ export function PlayerView({ params, signal }) {
   const soundLabel = h('p', { class: 'sound-label' });
   const playButton = h('button', { class: 'play-btn', type: 'button', 'aria-label': 'Iniciar rolagem', onclick: togglePlay }, icon('play', 26));
   const moreButton = h('button', { class: 'icon-btn dock-more', type: 'button', 'aria-label': 'Mais ajustes', 'aria-expanded': false, onclick: toggleMore }, icon('sliders'));
-  const versionButtons = [false, true].map((value) =>
-    h('button', {
-      type: 'button', class: 'segment', 'aria-pressed': state.simplified === value,
-      onclick: () => {
-        if (state.simplified === value) return;
-        state.simplified = value;
-        store.setPrefs({ simplified: value });
-        versionButtons.forEach((button, index) => button.setAttribute('aria-pressed', String((index === 1) === value)));
-        load();
-      },
-    }, value ? 'Simplificada' : 'Normal'),
-  );
   const columnsInput = h('input', {
     type: 'checkbox', class: 'switch__input', checked: state.twoColumns,
     onchange: (event) => {
@@ -196,8 +187,6 @@ export function PlayerView({ params, signal }) {
 
   const morePanel = h('div', { class: 'controls-more' },
     Stepper('Capotraste', capoLabel, () => changeCapo(-1), () => changeCapo(1)),
-    h('div', { class: 'control' }, h('span', { class: 'stepper__label' }, 'Versão'),
-      h('div', { class: 'segmented segmented--compact', role: 'group', 'aria-label': 'Versão da cifra' }, versionButtons)),
     h('div', { class: 'control' }, h('span', { class: 'stepper__label' }, 'Velocidade'), speedInput),
     Stepper('Letra', sizeLabel, () => changeSize(-1), () => changeSize(1)),
     h('label', { class: 'switch control-columns' }, columnsInput, h('span', { class: 'switch__track', 'aria-hidden': 'true' }), h('span', {}, 'Duas colunas')),
@@ -223,7 +212,7 @@ export function PlayerView({ params, signal }) {
     sizeLabel.textContent = String(state.size);
     if (state.mode === 'mine') {
       const fret = state.arrangement?.capo_fret;
-      soundLabel.textContent = `${fret ? `Capotraste na ${fret}ª casa. ` : ''}Tom e capotraste ficam travados na Minha versão. Volte para Original para alterar.`;
+      soundLabel.textContent = `${fret ? `Capotraste na ${fret}ª casa. ` : ''}Tom e capotraste ficam travados na Minha versão. Volte para Original ou Simplificada para alterar.`;
       return;
     }
     const key = state.data?.key;
@@ -254,11 +243,17 @@ export function PlayerView({ params, signal }) {
     }, 500);
   }
 
-  function setMode(mode) {
-    if (mode === state.mode) return;
-    state.mode = mode;
-    modeButtons.forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.value === mode)));
-    const locked = mode === 'mine';
+  function setMode(choice) {
+    if (choice === currentMode()) return;
+    if (choice === 'mine') {
+      state.mode = 'mine';
+    } else {
+      state.mode = 'original';
+      state.simplified = choice === 'simple';
+      store.setPrefs({ simplified: state.simplified });
+    }
+    modeButtons.forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.value === choice)));
+    const locked = state.mode === 'mine';
     controls.querySelectorAll('.stepper[data-pitch="true"]').forEach((stepper) => {
       stepper.classList.toggle('is-locked', locked);
       stepper.querySelectorAll('button').forEach((button) => {
@@ -313,8 +308,21 @@ export function PlayerView({ params, signal }) {
     if (!data?.song_id) return;
     try {
       if (data.repertoire?.status === status) {
+        const previous = data.repertoire;
         await api.removeRepertoire(data.song_id);
         data.repertoire = null;
+        toast(`Removida de ${REPERTOIRE_LABELS[status]}.`, 'info', {
+          label: 'Desfazer',
+          onClick: async () => {
+            try {
+              await api.saveRepertoire(data.song_id, previous);
+              data.repertoire = previous;
+              syncRepertoire();
+            } catch (error) {
+              toast(error.message, 'error');
+            }
+          },
+        });
       } else {
         const body = { status, preferred_semitones: state.semitones, preferred_capo: state.capo };
         await api.saveRepertoire(data.song_id, body);
@@ -339,7 +347,7 @@ export function PlayerView({ params, signal }) {
     replaceContent(railDiagram, ChordDiagram(name, { size: 'lg' }), h('div', { class: 'rail-check' }, ChordCheckButton(name)));
     if (!window.matchMedia('(min-width: 1024px)').matches) {
       replaceContent(dialogBody, ChordDiagram(name, { size: 'lg' }), ChordCheckButton(name));
-      if (!dialog.open) dialog.showModal();
+      if (!dialog.open) showDialog(dialog, { focus: () => dialogBody.querySelector('button') });
     }
   }
 
@@ -677,7 +685,7 @@ export function PlayerView({ params, signal }) {
       h('div', { class: 'player-head__main' },
         h('div', { class: 'player-head__titles' }, heroTitle, heroMeta),
         heroLevel),
-      h('div', { class: 'player-head__tools' }, StudyTimerControl({ signal }), repertoireGroup, externalSlot)),
+      h('div', { class: 'player-head__tools' }, SyncIndicator({ signal }), StudyTimerControl({ signal }), repertoireGroup, externalSlot)),
     modeGroup,
     arrangementPanel,
     chordStrip,

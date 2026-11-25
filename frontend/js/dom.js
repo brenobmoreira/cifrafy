@@ -66,6 +66,19 @@ export function withViewTransition(update) {
   transition.finished.catch(() => {});
 }
 
+// Opens a modal, moves focus inside it and gives focus back when it closes.
+export function showDialog(dialog, { focus } = {}) {
+  const opener = document.activeElement;
+  dialog.showModal();
+  (typeof focus === 'function' ? focus() : focus)?.focus();
+  dialog.addEventListener('close', () => {
+    const target = opener instanceof HTMLElement && opener !== document.body && opener.isConnected
+      ? opener
+      : document.getElementById('main');
+    target?.focus({ preventScroll: true });
+  }, { once: true });
+}
+
 export function formatDuration(totalSeconds) {
   const seconds = Math.max(0, Math.ceil(totalSeconds));
   const minutes = Math.floor(seconds / 60);

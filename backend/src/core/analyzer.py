@@ -67,6 +67,7 @@ NON_BARRE_EXCEPTIONS = {
     "F7M",
     "F7+",
     "Fmaj7",
+    "FM7",
     "F7M(9)",
     "B7",  # Open B7 on 2nd fret (x21202) is frequently played without a barre
 }
@@ -81,12 +82,23 @@ CHORD_REGEX = re.compile(
 RARE_CHORD_SHARE = 0.04
 MAX_EASY_CAPO_FRET = 7
 
+MAJOR_SEVENTH_SPELLING = re.compile(r"^(?:7M|maj7|M7|7\+)")
+MAJOR_SEVENTH_MARK = re.compile(r"maj|M|7\+")
+SIMPLE_EXTENSION = re.compile(r"(?:maj|add|M|[0-9+/()])*")
+SUS_OR_POWER_DEGREE = re.compile(r"(?<!\d)[245](?!\d)")
+
 # Valid chords that are also common words in lyrics
 AMBIGUOUS_LYRIC_TOKENS = {"A", "E", "Em", "Am"}
 TAB_LINE = re.compile(r"^\s*[eBGDAE]\|")
 SHEET_TOKEN = re.compile(r"\[[^\]]*\]|\S+")
 SECTION_LINE = re.compile(r"^(?:\[[^\]]*\]|\S+:)$")
-NEUTRAL_SHEET_TOKEN = re.compile(r"^(?:\|+|-+|%|/+|\.+|\(?\d+x\)?|\(?x\d+\)?|\(?n\.c\.?\)?)$", re.IGNORECASE)
+NEUTRAL_SHEET_TOKEN = re.compile(r"^(?:\|+|-+|%|/+|\.+|[()]|\(?\d+x\)?|\(?x\d+\)?|\(?n\.c\.?\)?)$", re.IGNORECASE)
+# Cifra Club pages put zero-width spaces at the start of lines; they hide chords from the parser.
+INVISIBLE_CHARS = str.maketrans({"​": None, "‌": None, "‍": None, "⁠": None, "﻿": None, " ": " "})
+
+
+def clean_sheet_text(text: str) -> str:
+    return text.translate(INVISIBLE_CHARS).replace("\r\n", "\n")
 
 
 def parse_chord(chord: str) -> dict[str, Any]:
@@ -152,10 +164,39 @@ def is_barre_chord(chord: str) -> bool:
 
 
 def _chord_key(parsed: dict[str, Any]) -> tuple[int, str, str, int | None]:
-    """Enharmonic identity of a chord, so that A#m7 and Bbm7 compare equal."""
+    """Identity of a chord, so that A#m7 = Bbm7 and C7M = Cmaj7 = CM7 = C7+."""
     quality = {"min": "m", "º": "°"}.get(parsed["quality"], parsed["quality"])
     bass = NOTE_TO_INDEX.get(parsed["bass"]) if parsed["bass"] else None
-    return parsed["root_idx"], quality, parsed["extension"], bass
+    return parsed["root_idx"], quality, MAJOR_SEVENTH_SPELLING.sub("7M", parsed["extension"]), bass
+
+
+def _variant_group(parsed: dict[str, Any]) -> tuple[Any, ...]:
+    """Group plain variants of a chord (Bm, Bm7, Bm9, Bm/A) as one learning step.
+
+    Suspended, altered, power and minor-major chords stay on their own.
+    """
+    key = _chord_key(parsed)
+    extension = parsed["extension"]
+    is_plain_quality = key[1] in ("", "m")
+    is_simple = bool(SIMPLE_EXTENSION.fullmatch(extension)) and not SUS_OR_POWER_DEGREE.search(extension)
+    has_stray_plus = "+" in extension.replace("7+", "")
+    is_minor_major = key[1] == "m" and bool(MAJOR_SEVENTH_MARK.search(extension))
+    if not is_plain_quality or not is_simple or has_stray_plus or is_minor_major:
+        return ("exact", *key)
+    return ("shape", key[0], key[1])
+
+
+def _expand_learned(songs: list[dict[str, Any]], learned_chords: list[str] | None) -> set[Any]:
+    """Keys of the learned chords plus their variants found in these songs."""
+    parsed = [p for p in map(parse_chord, learned_chords or []) if p["root_idx"] != -1]
+    keys = {_chord_key(p) for p in parsed}
+    groups = {_variant_group(p) for p in parsed}
+    for song in songs:
+        for chord in song.get("chord_frequencies") or {}:
+            candidate = parse_chord(chord)
+            if candidate["root_idx"] != -1 and _variant_group(candidate) in groups:
+                keys.add(_chord_key(candidate))
+    return keys
 
 
 def _known_keys(known_chords: list[str]) -> set[tuple[int, str, str, int | None]]:
@@ -164,12 +205,16 @@ def _known_keys(known_chords: list[str]) -> set[tuple[int, str, str, int | None]
 
 
 def _is_known(parsed: dict[str, Any], known_keys: set[tuple[int, str, str, int | None]]) -> bool:
-    """Exact match, or a simple open extension of a known triad (Am7 -> Am)."""
+    """Exact match, a simple open extension of a known triad (Am7 -> Am), or its plain seventh (Bm7 -> Bm)."""
     key = _chord_key(parsed)
     if key in known_keys:
         return True
     triad = (key[0], key[1], "", None)
-    return not parsed["is_barre"] and parsed["complexity_weight"] <= 1.4 and triad in known_keys
+    if triad not in known_keys:
+        return False
+    if parsed["is_barre"]:
+        return key[1] in ("", "m") and key[2] in ("7", "7M") and key[3] is None
+    return parsed["complexity_weight"] <= 1.4
 
 
 def transpose_chord(chord: str, semitones: int) -> str:
@@ -278,17 +323,33 @@ def _transpose_chord_line(line: str, semitones: int) -> str:
 def _sheet_line_types(lines: list[str]) -> list[str]:
     """Classify each line as chords, lyric, tab, section or blank.
 
-    A line holding only words like `A` or `E` right after a chord line is lyric,
-    because chord lines are followed by the lyric they belong to.
+    Lines holding only words like `A` or `E` are ambiguous. They are chords when followed by a
+    clear chord line, or when they open the sheet or a section. Right after a chord line and
+    before a lyric they are lyric, because a chord line is followed by the words it belongs to.
     """
+    classified = [_classify_sheet_line(line) for line in lines]
     types: list[str] = []
-    after_chords_or_ambiguous_lyric = False
-    for line in lines:
-        is_chord_line, is_ambiguous = _classify_sheet_line(line)
-        if is_chord_line and is_ambiguous and after_chords_or_ambiguous_lyric:
-            types.append("lyric")
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        is_chord_line, is_ambiguous = classified[index]
+        if is_chord_line and is_ambiguous:
+            end = index
+            while end < len(lines) and classified[end] == (True, True):
+                end += 1
+            before_clear_chords = end < len(lines) and classified[end] == (True, False)
+            previous_text = next((t for t in reversed(types) if t != "blank"), None)
+            opens_block = previous_text is None or previous_text == "section"
+            size = end - index
+            if before_clear_chords or opens_block:
+                types.extend(["chords"] * size)
+            elif types[-1] == "chords":
+                types.extend(["lyric"] * size)
+            else:
+                types.extend(["chords"] + ["lyric"] * (size - 1))
+            index = end
             continue
-        after_chords_or_ambiguous_lyric = is_chord_line
+        index += 1
         stripped = line.strip()
         if is_chord_line:
             types.append("chords")
@@ -317,7 +378,7 @@ def structure_sheet(text: str, semitones: int = 0) -> list[dict[str, str]]:
     """
     if not text:
         return []
-    lines = text.split("\n")
+    lines = clean_sheet_text(text).split("\n")
     transpose = semitones % 12 != 0
     return [
         {
@@ -332,7 +393,7 @@ def extract_chord_sequence(text: str) -> list[str]:
     """Return the chords of a sheet in playing order, ignoring lyrics, tabs and notation."""
     if not text:
         return []
-    lines = text.split("\n")
+    lines = clean_sheet_text(text).split("\n")
     sequence: list[str] = []
     for line, line_type in zip(lines, _sheet_line_types(lines)):
         if line_type != "chords":
@@ -377,7 +438,7 @@ def count_easy_songs(
     avoid_barre: bool,
     learned_chords: list[str] | None = None,
 ) -> int:
-    learned = _known_keys(learned_chords or [])
+    learned = _expand_learned(songs, learned_chords)
     known = _known_keys(known_chords) | learned
     return sum(
         _difficulty_level(song.get("chord_frequencies") or {}, known, avoid_barre, learned) == "Fácil"
@@ -534,12 +595,13 @@ def suggest_next_chords(
     """Rank the chords whose learning makes the most songs easier.
 
     `learned_chords` simulates chords already learned on purpose, as in a learning trail.
+    Plain variants of a chord count as one suggestion, named after the most frequent one.
     """
-    learned_keys = _known_keys(learned_chords or [])
+    learned_keys = _expand_learned(songs, learned_chords)
     known_keys = _known_keys(known_chords) | learned_keys
     rank = {"Fácil": 0, "Médio": 1, "Difícil": 2}
     pending: list[tuple[dict[str, Any], int]] = []
-    candidates: dict[tuple[int, str, str, int | None], str] = {}
+    candidates: dict[tuple[Any, ...], dict[str, Any]] = {}
 
     for song in songs:
         freqs = song.get("chord_frequencies") or {}
@@ -547,18 +609,23 @@ def suggest_next_chords(
         if level not in ("Médio", "Difícil"):
             continue
         pending.append((song, rank[level]))
-        for ch in freqs:
+        for ch, count in freqs.items():
             parsed = parse_chord(ch)
-            if parsed["root_idx"] != -1 and not _is_known(parsed, known_keys):
-                candidates.setdefault(_chord_key(parsed), ch)
+            if parsed["root_idx"] == -1 or _is_known(parsed, known_keys):
+                continue
+            entry = candidates.setdefault(_variant_group(parsed), {"keys": set(), "counts": {}})
+            entry["keys"].add(_chord_key(parsed))
+            entry["counts"][ch] = entry["counts"].get(ch, 0) + count
 
     suggestions: list[dict[str, Any]] = []
-    for key, chord in candidates.items():
+    for entry in candidates.values():
+        keys = entry["keys"]
+        chord = min(entry["counts"], key=lambda name: (-entry["counts"][name], len(name), name))
         improved: list[dict[str, Any]] = []
         unlocked: list[dict[str, Any]] = []
         for song, before in pending:
             after = _difficulty_level(
-                song["chord_frequencies"], known_keys | {key}, avoid_barre, learned_keys | {key}
+                song["chord_frequencies"], known_keys | keys, avoid_barre, learned_keys | keys
             )
             if rank[after] < before:
                 improved.append(song)

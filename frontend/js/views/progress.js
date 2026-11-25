@@ -3,8 +3,10 @@ import { study } from '../study.js';
 import { formatStudyTime, localDate } from '../studyTimer.js';
 import { GoalProgress } from '../components/StudyTimer.js';
 import { ErrorState, Skeleton, toast } from '../components/states.js';
+import { PracticeTabs } from '../components/PracticeTabs.js';
 
 const HISTORY_DAYS = 30;
+const WEEKDAYS = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
 
 function lastDays(days) {
   const byDate = new Map((days || []).map((day) => [day.date, day.seconds]));
@@ -39,15 +41,21 @@ function History(summary) {
   const format = new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'short' });
   const today = localDate();
   const studied = days.filter((day) => day.seconds > 0).length;
+  const range = `${format.format(days[0].label)} a ${format.format(days[days.length - 1].label)}`;
+  const offset = days[0].label.getDay();
   return h('div', { class: 'history' },
-    h('ul', { class: 'history__grid', 'aria-label': `Últimos ${HISTORY_DAYS} dias` }, days.map((day) => {
+    h('p', { class: 'history__range' }, range),
+    h('div', { class: 'history__weekdays', 'aria-hidden': 'true' }, WEEKDAYS.map((name) => h('span', {}, name))),
+    h('ul', { class: 'history__grid', 'aria-label': `Últimos ${HISTORY_DAYS} dias, ${range}` },
+      Array.from({ length: offset }, () => h('li', { class: 'history__pad', 'aria-hidden': 'true' })),
+      days.map((day) => {
       const text = `${format.format(day.label)}: ${day.seconds ? formatStudyTime(day.seconds) : 'sem estudo'}`;
       return h('li', {
         class: `history__day history__day--${intensity(day.seconds, summary.goal_minutes)}${day.date === today ? ' is-today' : ''}`,
         title: text,
         'aria-label': text,
       }, day.label.getDate());
-    })),
+      })),
     h('p', { class: 'section-sub' }, `${plural(studied, 'dia')} com estudo nos últimos ${HISTORY_DAYS}. A cor fica mais forte perto da sua meta.`));
 }
 
@@ -104,6 +112,7 @@ export function ProgressView({ signal }) {
   load();
 
   return h('section', { class: 'view view--progress' },
+    PracticeTabs('progresso'),
     h('header', { class: 'page-head' },
       h('div', {}, h('p', { class: 'eyebrow' }, 'Sua constância'), h('h1', { class: 'page-title' }, 'Progresso'))),
     h('div', { class: 'progress-layout' }, content, h('div', { class: 'panel' }, goalForm)));

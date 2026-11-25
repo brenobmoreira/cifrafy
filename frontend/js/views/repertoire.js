@@ -40,15 +40,20 @@ export function RepertoireView({ signal }) {
       if (status === 'remove') {
         await api.removeRepertoire(songId);
         songs = songs.filter((item) => (item.id ?? item.song_id) !== songId);
+        toast(`${song.track_name} saiu do repertório.`, 'info', {
+          label: 'Desfazer',
+          onClick: () => move(song, song.repertoire?.status ?? 'want'),
+        });
       } else {
         await api.saveRepertoire(songId, {
           status,
           preferred_semitones: song.repertoire?.preferred_semitones ?? 0,
           preferred_capo: song.repertoire?.preferred_capo ?? 0,
         });
-        songs = songs.map((item) => ((item.id ?? item.song_id) === songId
-          ? { ...item, repertoire: { ...item.repertoire, status } }
-          : item));
+        const updated = { ...song, repertoire: { ...song.repertoire, status } };
+        songs = songs.some((item) => (item.id ?? item.song_id) === songId)
+          ? songs.map((item) => ((item.id ?? item.song_id) === songId ? updated : item))
+          : [...songs, updated];
       }
       render();
     } catch (error) {

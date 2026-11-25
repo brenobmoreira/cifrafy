@@ -6,6 +6,7 @@ import { openChangeDrill, formatRate } from '../components/ChangeDrill.js';
 import { ChordCheckButton } from '../components/ChordCheck.js';
 import { ChordDiagram } from '../components/ChordDiagram.js';
 import { PracticeSession } from '../components/PracticeSession.js';
+import { PracticeTabs, ShowMore } from '../components/PracticeTabs.js';
 import { icon } from '../components/icons.js';
 import { EmptyState, ErrorState, LinkButton, Skeleton, toast } from '../components/states.js';
 
@@ -33,8 +34,10 @@ function TrailStep(step, index, data, onLearn) {
           step.is_barre && h('span', { class: 'tag' }, 'pestana')),
         h('p', { class: 'trail-step__benefit' }, stepBenefit(step)),
         TrailProgress(index === 0 ? data.current_easy : data.steps[index - 1].total_easy_after, step.total_easy_after, data.total_songs),
-        h('p', { class: 'trail-step__total' }, `${step.total_easy_after} de ${data.total_songs} fáceis depois deste acorde`),
-        step.examples?.length > 0 && h('ul', { class: 'trail-step__songs' },
+        h('p', { class: 'trail-step__total' },
+          `Músicas fáceis: ${index === 0 ? data.current_easy : data.steps[index - 1].total_easy_after} → ${step.total_easy_after} de ${data.total_songs}`),
+        step.examples?.length > 0 && h('p', { class: 'trail-step__songs-label' }, 'Aparece em'),
+        step.examples?.length > 0 && h('ul', { class: 'trail-step__songs', 'aria-label': `Músicas com ${step.chord}` },
           step.examples.slice(0, 3).map((song) =>
             h('li', {}, h('a', { class: 'text-link', href: songPath(song.artist, song.track_name) }, song.track_name)))),
         h('div', { class: 'rank__actions' },
@@ -111,8 +114,8 @@ export function PracticeView({ signal }) {
         }));
         return;
       }
-      replaceContent(trail, h('ol', { class: 'trail' },
-        data.steps.map((step, index) => TrailStep(step, index, data, learn))));
+      const steps = data.steps.map((step, index) => TrailStep(step, index, data, learn));
+      replaceContent(trail, h('ol', { class: 'trail' }, steps), ShowMore(steps, 2, 'Ver próximos acordes'));
     } catch (error) {
       if (error.name !== 'AbortError') replaceContent(trail, ErrorState({ error, onRetry: loadTrail }));
     }
@@ -133,8 +136,8 @@ export function PracticeView({ signal }) {
         return;
       }
       const onTrain = (change) => openChangeDrill(change, { signal, onSaved: () => loadChanges({ quiet: true }) });
-      replaceContent(changes, missing || null,
-        h('ol', { class: 'change-list' }, data.changes.map((change, index) => ChangeRow(change, index, onTrain))));
+      const rows = data.changes.map((change, index) => ChangeRow(change, index, onTrain));
+      replaceContent(changes, missing || null, h('ol', { class: 'change-list' }, rows), ShowMore(rows, 4, 'Ver mais trocas'));
     } catch (error) {
       if (error.name !== 'AbortError') replaceContent(changes, ErrorState({ error, onRetry: loadChanges }));
     }
@@ -153,12 +156,12 @@ export function PracticeView({ signal }) {
   loadAll();
 
   return h('section', { class: 'view view--practice' },
+    PracticeTabs('treino'),
     h('header', { class: 'page-head' },
       h('div', {},
         h('p', { class: 'eyebrow' }, 'Sua evolução'),
         h('h1', { class: 'page-title' }, 'Treino'),
-        summary,
-        h('a', { class: 'text-link', href: '#/progresso' }, 'Ver meu progresso')),
+        summary),
       h('div', { class: 'field practice-source' },
         h('label', { for: 'practice-source' }, 'Treinar com'),
         source)),
@@ -166,6 +169,7 @@ export function PracticeView({ signal }) {
       h('h2', { class: 'section-title' }, 'Sessão pronta'),
       h('p', { class: 'section-sub' }, 'Diga quanto tempo você tem. O app monta aquecimento, músicas e um acorde novo.'),
       PracticeSession({ signal, getPlaylistId: () => playlistId })),
+    h('h2', { class: 'practice-divider' }, 'Ou treine por partes'),
     h('div', { class: 'practice-layout' },
       h('div', { class: 'panel panel--plain' },
         h('h2', { class: 'section-title' }, 'Sua trilha'),

@@ -46,12 +46,20 @@ export function LinkButton({ href, label, iconName, variant = 'primary' }) {
 
 let toastHost = null;
 
-export function toast(message, tone = 'info') {
+// An action (like Desfazer) keeps the toast up longer so there is time to reach it.
+export function toast(message, tone = 'info', action = null) {
   if (!toastHost) {
     toastHost = h('div', { class: 'toasts', role: 'status', 'aria-live': 'polite' });
     document.body.append(toastHost);
   }
-  const item = h('div', { class: `toast toast--${tone}` }, message);
+  const item = h('div', { class: `toast toast--${tone}` }, h('span', {}, message),
+    action && h('button', {
+      class: 'toast__action', type: 'button',
+      onclick: () => {
+        item.remove();
+        action.onClick();
+      },
+    }, action.label));
   toastHost.append(item);
-  setTimeout(() => item.remove(), 4800);
+  setTimeout(() => item.remove(), action ? 8000 : 4800);
 }
