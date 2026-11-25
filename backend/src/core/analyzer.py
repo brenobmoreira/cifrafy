@@ -656,6 +656,71 @@ def suggest_next_chords(
     return suggestions[:limit]
 
 
+MAJOR_DEGREES = ((0, False), (2, True), (4, True), (5, False), (7, False), (9, True))
+KEY_PATTERN = re.compile(r"^([A-G][#b]?)(m?)$")
+
+
+def transpose_frequencies(chord_frequencies: dict[str, int], semitones: int) -> dict[str, int]:
+    moved: dict[str, int] = {}
+    for chord, count in chord_frequencies.items():
+        name = transpose_chord(chord, semitones)
+        moved[name] = moved.get(name, 0) + count
+    return moved
+
+
+def written_key(stated_key: str | None, chord_frequencies: dict[str, int] | None) -> str | None:
+    """Key the sheet is written in. Sites sometimes state the recording key while the chords are
+    written for another tuning (Eb stated, chords in E), so the stated key only breaks ties.
+    """
+    match = KEY_PATTERN.match((stated_key or "").strip())
+    if not match or not chord_frequencies:
+        return stated_key or None
+    minor = match.group(2) == "m"
+    stated_idx = NOTE_TO_INDEX[match.group(1)]
+    chords = []
+    for name, count in chord_frequencies.items():
+        parsed = parse_chord(name)
+        if parsed["root_idx"] == -1 or parsed["quality"] not in ("", "m"):
+            continue
+        chords.append((parsed["root_idx"], parsed["quality"] == "m", count))
+    if not chords:
+        return stated_key
+
+    def fit(shift: int) -> int:
+        tonic = (stated_idx + shift + (3 if minor else 0)) % 12
+        return sum(
+            count for root, is_minor, count in chords if ((root - tonic) % 12, is_minor) in MAJOR_DEGREES
+        )
+
+    best, best_score = 0, fit(0)
+    for shift in (1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6):
+        score = fit(shift)
+        if score > best_score:
+            best, best_score = shift, score
+    return transpose_chord(stated_key, best) if best else stated_key
+
+
+def preferred_key_plan(song_key: str | None, preferred_key: str | None) -> dict[str, Any] | None:
+    """How to play a song with the shapes of the preferred key. Minor songs aim at its relative minor.
+
+    `semitones` moves the chords there; `capo` (1 to 7, else None) keeps the original sound
+    while playing the same shapes.
+    """
+    song = KEY_PATTERN.match((song_key or "").strip())
+    preferred = KEY_PATTERN.match((preferred_key or "").strip())
+    if not song or not preferred:
+        return None
+    minor = song.group(2) == "m"
+    target_idx = (NOTE_TO_INDEX[preferred.group(1)] + (9 if minor else 0)) % 12
+    up = (target_idx - NOTE_TO_INDEX[song.group(1)]) % 12
+    capo = (12 - up) % 12
+    return {
+        "key": transpose_chord(f"{preferred.group(1)}{'m' if minor else ''}", 9 if minor else 0),
+        "semitones": up - 12 if up > 6 else up,
+        "capo": capo if 1 <= capo <= 7 else None,
+    }
+
+
 def evaluate_song_difficulty(
     unique_chords: list[str],
     known_chords: list[str] | None = None,

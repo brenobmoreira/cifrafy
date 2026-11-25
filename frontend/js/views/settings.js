@@ -8,11 +8,17 @@ const SPEEDS = [[3, 'Devagar'], [5, 'Média'], [7, 'Rápida']];
 export function SettingsView() {
   const keySelect = h('select', {
     id: 'settings-key', class: 'select',
-    onchange: (event) => {
-      store.setPrefs({ preferredKey: event.target.value });
-      toast(`Tom do violão: ${event.target.value}.`, 'ok');
+    onchange: async (event) => {
+      const key = event.target.value;
+      try {
+        await store.saveProfile({ preferred_key: key });
+        toast(`Tom do violão: ${key}. As músicas agora são avaliadas nele também.`, 'ok');
+      } catch (error) {
+        event.target.value = store.profile.preferred_key;
+        toast(error.message, 'error');
+      }
     },
-  }, KEYS.map((key) => h('option', { value: key, selected: key === store.prefs.preferredKey }, key)));
+  }, KEYS.map((key) => h('option', { value: key, selected: key === store.profile.preferred_key }, key)));
 
   const speedSelect = h('select', {
     id: 'settings-speed', class: 'select',
@@ -29,7 +35,7 @@ export function SettingsView() {
       h('div', { class: 'field' },
         h('label', { for: 'settings-key' }, 'Tom do violão'),
         keySelect,
-        h('p', { class: 'field__hint' }, 'O tom em que você prefere tocar. Na música aparece o botão para mudar para ele. Músicas em tom menor usam o relativo (G vira Em).')),
+        h('p', { class: 'field__hint' }, 'O tom em que você prefere tocar. As músicas são avaliadas nele também, e na música aparece o botão para mudar para ele. Músicas em tom menor usam o relativo (G vira Em).')),
       h('div', { class: 'field' },
         h('label', { for: 'settings-speed' }, 'Velocidade da rolagem'),
         speedSelect,

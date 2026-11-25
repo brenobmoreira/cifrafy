@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.core.analyzer import evaluate_song_difficulty, suggest_next_chords
+from src.core.analyzer import (
+    evaluate_song_difficulty,
+    preferred_key_plan,
+    suggest_next_chords,
+    transpose_frequencies,
+    written_key,
+)
 from src.core.arrangement import build_arrangement
 from src.core.chord_scraper import fetch_chord_sheet_async, find_cached_song
 from src.core.spotify_client import fetch_listening_tracks, fetch_playlist_tracks
@@ -16,14 +22,35 @@ LEVEL_CLOSENESS = {"Fácil": 3, "Médio": 2, "Difícil": 1}
 
 
 def evaluate_song(song: dict[str, Any], profile: dict[str, Any]) -> dict[str, Any]:
-    return evaluate_song_difficulty(
-        unique_chords=song["unique_chords"],
-        known_chords=profile["known_chords"],
-        avoid_barre=profile["avoid_barre"],
-        chord_frequencies=song["chord_frequencies"],
-        avg_changes_per_line=song["avg_changes_per_line"],
-        has_tabs=song["has_tabs"],
-    )
+    """Difficulty as written, plus `in_preferred_key`: the same song moved to the user's key."""
+    def evaluate(freqs: dict[str, int]) -> dict[str, Any]:
+        return evaluate_song_difficulty(
+            unique_chords=list(freqs),
+            known_chords=profile["known_chords"],
+            avoid_barre=profile["avoid_barre"],
+            chord_frequencies=freqs,
+            avg_changes_per_line=song["avg_changes_per_line"],
+            has_tabs=song["has_tabs"],
+        )
+
+    freqs = song["chord_frequencies"] or {chord: 1 for chord in song["unique_chords"]}
+    result = evaluate(freqs)
+    key = written_key(song.get("key"), freqs)
+    plan = preferred_key_plan(key, profile.get("preferred_key"))
+    result["written_key"] = key
+    result["in_preferred_key"] = None
+    if plan and plan["semitones"]:
+        moved = evaluate(transpose_frequencies(freqs, plan["semitones"]))
+        result["in_preferred_key"] = {**plan, "level": moved["level"], "score": moved["score"]}
+    return result
+
+
+def best_fit(item: dict[str, Any]) -> tuple[str, float]:
+    """Level and score of the easier way to play: as written or in the preferred key."""
+    other = item.get("in_preferred_key")
+    if other and other["score"] > item["score"]:
+        return other["level"], other["score"]
+    return item["level"], item["score"]
 
 
 def search_catalog(
@@ -44,12 +71,12 @@ def search_catalog(
     items: list[dict[str, Any]] = []
     for song in songs:
         item = {**song, **evaluate_song(song, profile), "repertoire": repertoire.get(song["id"])}
-        if wanted and item["level"].lower() != wanted:
+        if wanted and best_fit(item)[0].lower() != wanted:
             if not (with_capo and wanted == "fácil" and item["easy_with_capo"]):
                 continue
         items.append(item)
 
-    items.sort(key=lambda x: x["score"], reverse=True)
+    items.sort(key=lambda x: best_fit(x)[1], reverse=True)
     return items[:limit]
 
 

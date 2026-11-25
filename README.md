@@ -54,3 +54,12 @@ cd backend
 pip install -e ".[dev]"
 pytest
 ```
+
+Testes de navegador, no celular e no desktop. Eles sobem uma API própria nas portas 8791 e 8792, com um banco de teste descartável, e não acessam o Cifra Club:
+
+```bash
+cd e2e
+npm ci
+npx playwright install chromium
+BACKEND_PYTHON=../backend/.venv/bin/python npx playwright test
+```

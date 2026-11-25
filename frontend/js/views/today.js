@@ -4,7 +4,7 @@ import { songPath } from '../router.js';
 import { store } from '../store.js';
 import { ListeningSection } from '../components/ListeningSection.js';
 import { NextChordSpotlight } from '../components/NextChord.js';
-import { SongGrid } from '../components/SongCard.js';
+import { bestFit, SongGrid } from '../components/SongCard.js';
 import { icon } from '../components/icons.js';
 import { EmptyState, ErrorState, LinkButton, Skeleton, Strings } from '../components/states.js';
 
@@ -17,7 +17,7 @@ const LEVELS = [
 
 function matchesLevel(song, level, withCapo) {
   if (!level) return true;
-  if (song.level === level) return true;
+  if (bestFit(song).level === level) return true;
   return level === 'Fácil' && withCapo && Boolean(song.easy_with_capo);
 }
 
@@ -109,7 +109,7 @@ export function TodayView({ signal }) {
       .filter((track) => matchesLevel(track, level, withCapo))
       .filter((track) => !term || `${track.name} ${track.artist}`.toLocaleLowerCase('pt-BR').includes(term))
       .map((track) => ({ ...track, id: track.song_id, track_name: track.name }))
-      .sort((a, b) => (b.score || 0) - (a.score || 0));
+      .sort((a, b) => (bestFit(b).score || 0) - (bestFit(a).score || 0));
     return { songs, pending: tracks.length - synced.length };
   }
 

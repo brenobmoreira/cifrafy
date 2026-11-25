@@ -24,6 +24,8 @@ from src.core.analyzer import extract_chord_sequence
 logger = logging.getLogger(__name__)
 
 SIMPLIFIED_SUFFIX = "__simplificada"
+# Key whose shapes the user likes to play in. Minor songs aim at its relative minor.
+DEFAULT_PREFERRED_KEY = "G"
 CHORD_SEQUENCE_VERSION_KEY = "chord_sequence_version"
 CHORD_SEQUENCE_VERSION = 2
 
@@ -194,6 +196,9 @@ class Database:
                 WHERE length(spotify_track_id) = 22 AND instr(spotify_track_id, '_') = 0;
                 """
             )
+            profile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(user_profile)")}
+            if "preferred_key" not in profile_columns:
+                conn.execute("ALTER TABLE user_profile ADD COLUMN preferred_key TEXT NOT NULL DEFAULT 'G'")
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(song_index)")}
             if "chord_sequence_json" not in columns:
                 conn.execute("ALTER TABLE song_index ADD COLUMN chord_sequence_json TEXT")
@@ -251,11 +256,13 @@ class Database:
                     "known_chords": settings.DEFAULT_KNOWN_CHORDS,
                     "learning_chords": [],
                     "avoid_barre": True,
+                    "preferred_key": DEFAULT_PREFERRED_KEY,
                 }
             return {
                 "known_chords": json.loads(row["known_chords_json"]),
                 "learning_chords": json.loads(row["learning_chords_json"]),
                 "avoid_barre": bool(row["avoid_barre"]),
+                "preferred_key": row["preferred_key"] or DEFAULT_PREFERRED_KEY,
                 "updated_at": row["updated_at"],
             }
 
@@ -264,8 +271,10 @@ class Database:
         known_chords: list[str] | None = None,
         learning_chords: list[str] | None = None,
         avoid_barre: bool | None = None,
+        preferred_key: str | None = None,
     ) -> dict[str, Any]:
         current = self.get_user_profile()
+        new_key = preferred_key or current["preferred_key"]
         new_known = known_chords if known_chords is not None else current["known_chords"]
         new_learning = (
             learning_chords if learning_chords is not None else current["learning_chords"]
@@ -276,13 +285,15 @@ class Database:
             conn.execute(
                 """
                 UPDATE user_profile
-                SET known_chords_json = ?, learning_chords_json = ?, avoid_barre = ?, updated_at = ?
+                SET known_chords_json = ?, learning_chords_json = ?, avoid_barre = ?, preferred_key = ?,
+                    updated_at = ?
                 WHERE id = 1
                 """,
                 (
                     json.dumps(new_known),
                     json.dumps(new_learning),
                     int(new_avoid),
+                    new_key,
                     _utc_now(),
                 ),
             )

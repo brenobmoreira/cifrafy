@@ -9,8 +9,6 @@ const DEFAULT_PREFS = {
   simplified: false,
   sheetSize: 15,
   scrollSpeed: 5,
-  // Key whose shapes the user likes to play in. Minor songs use its relative minor.
-  preferredKey: 'G',
 };
 
 function loadPrefs() {
@@ -25,7 +23,7 @@ const listeners = new Set();
 
 export const store = {
   status: null,
-  profile: { known_chords: [], learning_chords: [], avoid_barre: true },
+  profile: { known_chords: [], learning_chords: [], avoid_barre: true, preferred_key: 'G' },
   prefs: loadPrefs(),
 
   subscribe(listener) {

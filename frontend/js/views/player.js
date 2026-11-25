@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { formatDuration, h, replaceContent, showDialog } from '../dom.js';
-import { normalizeSemitones, parseChord, preferredKeyPlan, splitToken, transposeKey, writtenKey } from '../chords.js';
+import { normalizeSemitones, parseChord, splitToken, transposeKey } from '../chords.js';
 import { store } from '../store.js';
 import { studyTimer } from '../study.js';
 import { ChordCheckButton } from '../components/ChordCheck.js';
@@ -215,6 +215,7 @@ export function PlayerView({ params, signal }) {
     if (key) parts.push(`Tom original ${key}`);
     if (state.capo) parts.push(`capotraste na ${state.capo}ª casa`);
     if (sounding && sounding !== key) parts.push(`soa em ${sounding}`);
+    else if (sounding && state.capo) parts.push('soa no tom original');
     soundLabel.textContent = parts.join(', ');
   }
 
@@ -403,17 +404,17 @@ export function PlayerView({ params, signal }) {
 
   // Offer the key set in Ajustes. It replaces the capo tip: those shapes are usually open already.
   function PreferredKeyCallout() {
-    const plan = preferredKeyPlan(state.key, store.prefs.preferredKey);
-    if (!plan || transposeKey(state.key, state.semitones) === plan.target) return null;
+    const plan = state.data?.preferred_key_plan;
+    if (!plan || transposeKey(state.key, state.semitones) === plan.key) return null;
     return h('div', { class: 'callout callout--key' },
       h('p', {}, `Tom original: ${state.key}`),
       h('div', { class: 'callout__actions' },
         h('button', { class: 'btn btn--small btn--primary', type: 'button', onclick: () => applyPlan(plan.semitones, 0) },
-          `Mudar para ${plan.target}`),
+          `Mudar para ${plan.key}`),
         plan.capo && h('button', {
           class: 'btn btn--small btn--ghost', type: 'button', title: 'Soa igual à gravação',
           onclick: () => applyPlan(-plan.capo, plan.capo),
-        }, `${plan.target} com capotraste na ${plan.capo}ª`)));
+        }, `${plan.key} com capotraste na ${plan.capo}ª`)));
   }
 
   function renderCallouts(data) {
@@ -523,7 +524,7 @@ export function PlayerView({ params, signal }) {
 
   function renderSong(data) {
     state.data = data;
-    state.key = writtenKey(data.key, data.chord_frequencies, state.semitones);
+    state.key = data.written_key || data.key || null;
     if (data.song_id) studyTimer.associateSong(data.song_id);
     heroTitle.textContent = data.track_name || track;
     heroMeta.textContent = data.artist || artist;

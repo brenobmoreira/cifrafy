@@ -342,7 +342,7 @@ def test_transposition_does_not_change_stored_sheet(site):
 
 
 def test_catalog_filters_level_before_limit_and_hides_duplicates():
-    db.update_user_profile(known_chords=["C", "G"])
+    db.update_user_profile(known_chords=["C", "G"], preferred_key="Bb")
     for i in range(3):
         index_song(f"facil-{i}", name=f"Facil {i}")
     index_song("facil-0__simplificada", name="Facil 0", freqs={"C": 9})

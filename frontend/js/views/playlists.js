@@ -4,7 +4,7 @@ import { songPath } from '../router.js';
 import { store } from '../store.js';
 import { syncQueue, trackKey } from '../syncQueue.js';
 import { icon } from '../components/icons.js';
-import { LevelBadge } from '../components/SongCard.js';
+import { bestFit, LevelBadge } from '../components/SongCard.js';
 import { EmptyState, ErrorState, Skeleton, Strings, toast } from '../components/states.js';
 
 function SpotifyConnect() {
@@ -192,7 +192,7 @@ export function PlaylistDetailView({ params, signal }) {
     }
     if (track.is_synced || state) {
       return track.level
-        ? h('span', { class: 'track-rating' }, LevelBadge(track.level), track.score)
+        ? h('span', { class: 'track-rating' }, LevelBadge(bestFit(track).level), bestFit(track).score)
         : h('span', { class: 'track-state track-state--synced' }, ROW_STATUS[state || 'synced']);
     }
     return h('span', { class: 'track-state' }, 'Pendente');

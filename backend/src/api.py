@@ -17,7 +17,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import settings
 from src.core import library, practice, study
-from src.core.analyzer import evaluate_song_difficulty, structure_sheet, transpose_chord, transpose_sheet
+from src.core.analyzer import (
+    evaluate_song_difficulty,
+    preferred_key_plan,
+    structure_sheet,
+    transpose_chord,
+    transpose_sheet,
+    written_key,
+)
 from src.core.chord_scraper import (
     CifraClubRateLimited,
     CifraClubUnavailable,
@@ -81,6 +88,7 @@ class ProfileUpdateRequest(BaseModel):
     known_chords: list[str] | None = None
     learning_chords: list[str] | None = None
     avoid_barre: bool | None = None
+    preferred_key: str | None = Field(None, pattern=r"^[A-G][#b]?$")
 
 
 class TransposeRequest(BaseModel):
@@ -190,6 +198,7 @@ def update_profile(payload: ProfileUpdateRequest) -> dict[str, Any]:
         known_chords=payload.known_chords,
         learning_chords=payload.learning_chords,
         avoid_barre=payload.avoid_barre,
+        preferred_key=payload.preferred_key,
     )
 
 
@@ -286,6 +295,7 @@ async def api_fetch_chord_sheet(
 
     chord_freqs: dict[str, int] = sheet.get("chord_frequencies", {})
     unique_chords: list[str] = sheet.get("unique_chords", [])
+    key = written_key(sheet.get("key"), chord_freqs)
 
     if semitones != 0 and chord_freqs:
         transposed_freqs: dict[str, int] = {}
@@ -319,6 +329,8 @@ async def api_fetch_chord_sheet(
         "chord_frequencies": chord_freqs,
         "semitones": semitones,
         "evaluation": evaluation,
+        "written_key": key,
+        "preferred_key_plan": preferred_key_plan(key, profile.get("preferred_key")),
     }
 
 

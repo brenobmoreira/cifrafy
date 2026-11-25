@@ -266,3 +266,25 @@ def test_suggest_next_chords_ranks_by_unlocked_songs() -> None:
     assert result[0]["songs_improved"] == 2
     assert [e["track_name"] for e in result[0]["examples"]] == ["Um", "Dois"]
     assert result[1]["chord"] == "Bm"
+
+
+def test_written_key_follows_the_chords():
+    from src.core.analyzer import written_key
+
+    # Cifra Club states the recording key (half step down) while the chords are in E.
+    assert written_key("Eb", {"E": 10, "C#m": 6, "G#m": 5, "A": 4, "B": 4, "G#": 1}) == "E"
+    assert written_key("Em", {"Em": 10, "C": 8, "D": 8}) == "Em"
+    assert written_key("Am", {"Am": 5, "G": 3, "F": 3, "E": 2}) == "Am"
+    assert written_key(None, {"C": 1}) is None
+    assert written_key("C", {}) == "C"
+
+
+def test_preferred_key_plan():
+    from src.core.analyzer import preferred_key_plan
+
+    assert preferred_key_plan("D", "G") == {"key": "G", "semitones": 5, "capo": 7}
+    assert preferred_key_plan("C", "G") == {"key": "G", "semitones": -5, "capo": 5}
+    assert preferred_key_plan("F#m", "G") == {"key": "Em", "semitones": -2, "capo": 2}
+    assert preferred_key_plan("E", "G") == {"key": "G", "semitones": 3, "capo": None}
+    assert preferred_key_plan("G", "G") == {"key": "G", "semitones": 0, "capo": None}
+    assert preferred_key_plan(None, "G") is None

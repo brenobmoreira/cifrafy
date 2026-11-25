@@ -43,6 +43,8 @@ def add_song(slug, chords, sheet=None):
 
 
 def test_catalog_with_capo_and_repertoire(client):
+    # Preferred key equal to the hard song's key, so only the capo makes it easy.
+    db.update_user_profile(preferred_key="Bb")
     easy = add_song("facil", ["C", "G"])
     capo = add_song("capo", ["Bb", "F", "Gm", "Eb"])
     client.put(f"/api/repertoire/{capo}", json={"status": "want", "preferred_capo": 3})
@@ -173,3 +175,23 @@ def test_no_demo_playlists():
 def test_mcp_exposes_new_tools():
     tools = {tool.name for tool in asyncio.run(mcp.list_tools())}
     assert {"update_known_chords", "suggest_next_chords", "set_song_status", "list_repertoire"} <= tools
+
+
+def test_song_is_rated_in_the_preferred_key(client):
+    song = add_song("em-bb", ["Bb", "F", "Gm", "Eb"])
+    item = next(s for s in client.get("/api/catalog").json() if s["id"] == song)
+    assert item["written_key"] == "Bb"
+    assert item["level"] != "Fácil"
+    assert item["in_preferred_key"] == {**item["in_preferred_key"], "key": "G", "semitones": -3, "capo": 3, "level": "Fácil"}
+    assert [s["id"] for s in client.get("/api/catalog", params={"level": "Fácil"}).json()] == [song]
+
+    db.update_user_profile(preferred_key="Bb")
+    item = next(s for s in client.get("/api/catalog").json() if s["id"] == song)
+    assert item["in_preferred_key"] is None
+
+
+def test_preferred_key_is_saved_and_validated(client):
+    assert client.get("/api/profile").json()["preferred_key"] == "G"
+    assert client.put("/api/profile", json={"preferred_key": "Eb"}).json()["preferred_key"] == "Eb"
+    assert client.put("/api/profile", json={"preferred_key": "H"}).status_code == 422
+    assert client.get("/api/profile").json()["preferred_key"] == "Eb"

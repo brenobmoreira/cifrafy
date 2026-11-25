@@ -13,6 +13,13 @@ export const REPERTOIRE_LABELS = {
 
 export const repertoireStatus = (song) => song?.repertoire?.status ?? null;
 
+// The easier way to play: as written, or moved to the key set in Ajustes (`key` is set then).
+export function bestFit(song) {
+  const other = song.in_preferred_key;
+  if (other && other.score > (song.score ?? 0)) return { level: other.level, score: other.score, key: other.key };
+  return { level: song.level, score: song.score, key: null };
+}
+
 export function LevelBadge(level) {
   return h(
     'span',
@@ -68,9 +75,11 @@ function capoText(song) {
 
 export function SongCard(song, { index = 0, footer = null } = {}) {
   const title = song.track_name || song.name;
-  const capo = capoText(song);
+  const fit = bestFit(song);
+  const capo = fit.key ? null : capoText(song);
   const status = repertoireStatus(song);
-  const meta = [song.artist, song.key ? `Tom ${song.key}` : null].filter(Boolean).join(' · ');
+  const key = song.written_key || song.key;
+  const meta = [song.artist, key ? `Tom ${key}` : null].filter(Boolean).join(' · ');
 
   const card = h(
     'article',
@@ -94,10 +103,11 @@ export function SongCard(song, { index = 0, footer = null } = {}) {
         ),
         h('p', { class: 'song-card__meta' }, meta),
       ),
-      LevelBadge(song.level),
+      LevelBadge(fit.level),
     ),
-    ScoreMeter(song.score),
+    ScoreMeter(fit.score),
     ChordChips(song),
+    fit.key && h('p', { class: 'song-card__capo' }, `${fit.level} tocando em ${fit.key}`),
     capo && h('p', { class: 'song-card__capo' }, capo),
     status && h('p', { class: 'song-card__status' }, REPERTOIRE_LABELS[status]),
     footer && h('div', { class: 'song-card__footer' }, footer),
