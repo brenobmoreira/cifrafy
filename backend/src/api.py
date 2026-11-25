@@ -19,10 +19,13 @@ from src.config import settings
 from src.core import library, practice, study
 from src.core.analyzer import evaluate_song_difficulty, structure_sheet, transpose_chord, transpose_sheet
 from src.core.chord_scraper import (
+    CifraClubRateLimited,
+    CifraClubUnavailable,
     analyze_tracks,
     cifraclub_limiter,
     fetch_chord_sheet_async,
     rank_recommendations,
+    search_songs,
     summarize_batch,
 )
 from src.core.spotify_client import (
@@ -216,7 +219,7 @@ def api_delete_playlist(playlist_id: str) -> dict[str, str]:
 @app.get("/api/playlists/{playlist_id}/tracks")
 async def api_get_playlist_tracks(
     playlist_id: str,
-    limit: int = Query(100, ge=1, le=200),
+    limit: int = Query(1000, ge=1, le=1000),
     simplified: bool = Query(False),
 ) -> list[dict[str, Any]]:
     """Lista todas as faixas da playlist (rápido, sem bater no Cifra Club) e cruza com o que já está no SQLite."""
@@ -319,6 +322,23 @@ async def api_fetch_chord_sheet(
     }
 
 
+@app.get("/api/search")
+async def api_search_cifraclub(
+    q: str = Query(..., min_length=2, max_length=120, description="Música ou artista"),
+    limit: int = Query(10, ge=1, le=20),
+) -> list[dict[str, str]]:
+    """Busca músicas no Cifra Club, fora das playlists. Abrir uma delas salva a cifra no banco."""
+    try:
+        return await search_songs(q, limit)
+    except CifraClubRateLimited as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Cifra Club limitou o acesso. Tente novamente em {exc.retry_after_seconds}s.",
+        ) from exc
+    except CifraClubUnavailable as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post("/api/evaluate")
 def api_evaluate_difficulty(payload: EvaluateRequest) -> dict[str, Any]:
     profile = db.get_user_profile()
@@ -404,6 +424,14 @@ def api_set_repertoire(song_id: int, payload: RepertoireUpdateRequest) -> dict[s
 def api_delete_repertoire(song_id: int) -> dict[str, Any]:
     if not db.delete_repertoire_entry(song_id):
         raise HTTPException(status_code=404, detail=f"Música {song_id} não está no repertório.")
+    return {"status": "deleted", "song_id": song_id}
+
+
+@app.delete("/api/songs/{song_id}")
+def api_delete_song(song_id: int) -> dict[str, Any]:
+    """Exclui a música do banco local. Se ela vier de uma playlist, a próxima sincronização baixa de novo."""
+    if not db.delete_song(song_id):
+        raise HTTPException(status_code=404, detail=f"Música {song_id} não encontrada.")
     return {"status": "deleted", "song_id": song_id}
 
 

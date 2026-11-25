@@ -62,7 +62,7 @@ def test_full_session_has_every_block_and_exact_minutes(client):
     for minutes in (5, 7, 20, 33, 120):
         data = client.get("/api/practice/session", params={"minutes": minutes}).json()
         assert data["minutes"] == minutes
-        assert [b["kind"] for b in data["blocks"]] == ["warmup", "mastered", "in_progress", "new_chord"]
+        assert [b["kind"] for b in data["blocks"]] == ["warmup", "change", "mastered", "in_progress", "new_chord"]
         assert sum(b["minutes"] for b in data["blocks"]) == minutes
         assert all(b["minutes"] >= 1 and b["instruction"] for b in data["blocks"])
 
@@ -70,7 +70,8 @@ def test_full_session_has_every_block_and_exact_minutes(client):
     assert blocks["mastered"]["song"]["song_id"] == easy
     assert blocks["in_progress"]["song"]["song_id"] == going
     assert blocks["in_progress"]["song"]["level"]
-    assert set(blocks["warmup"]["change"]) == {"from", "to", "target_per_minute"}
+    assert set(blocks["change"]["change"]) == {"from", "to", "target_per_minute"}
+    assert blocks["warmup"]["bpm"] and len(blocks["warmup"]["exercises"]) >= 3
     assert blocks["new_chord"]["chord"]["chord"]
 
 
@@ -87,8 +88,10 @@ def test_missing_blocks_redistribute_time(client):
     assert sum(b["minutes"] for b in data["blocks"]) == 10
 
 
-def test_empty_library_has_no_blocks(client):
-    assert client.get("/api/practice/session").json() == {"minutes": 20, "blocks": []}
+def test_empty_library_still_has_the_warmup(client):
+    data = client.get("/api/practice/session").json()
+    assert [b["kind"] for b in data["blocks"]] == ["warmup"]
+    assert data["blocks"][0]["minutes"] == 20
 
 
 def test_session_limits(client):

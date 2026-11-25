@@ -1,9 +1,11 @@
 import { api } from '../api.js';
 import { h, plural, replaceContent } from '../dom.js';
+import { songPath } from '../router.js';
 import { store } from '../store.js';
 import { ListeningSection } from '../components/ListeningSection.js';
 import { NextChordSpotlight } from '../components/NextChord.js';
 import { SongGrid } from '../components/SongCard.js';
+import { icon } from '../components/icons.js';
 import { EmptyState, ErrorState, LinkButton, Skeleton, Strings } from '../components/states.js';
 
 const LEVELS = [
@@ -28,6 +30,8 @@ export function TodayView({ signal }) {
   const spotlight = h('div', { class: 'today-spotlight' });
   const count = h('p', { class: 'results-count' });
   const notice = h('div');
+  const webSearch = h('div', { class: 'web-search', 'aria-live': 'polite' });
+  let webController = null;
   const sourceSelect = h('select', {
     id: 'today-source',
     class: 'select',
@@ -68,11 +72,12 @@ export function TodayView({ signal }) {
     id: 'today-search',
     class: 'input',
     type: 'search',
-    placeholder: 'Música ou artista',
+    placeholder: 'Nas suas músicas ou no Cifra Club',
     oninput: (event) => {
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
         search = event.target.value.trim();
+        renderWebSearch();
         load();
       }, 250);
     },
@@ -148,6 +153,43 @@ export function TodayView({ signal }) {
     }
   }
 
+  // Songs outside the playlists come from Cifra Club, only on request, to spare its rate limit.
+  function renderWebSearch() {
+    webController?.abort();
+    if (search.length < 2) {
+      replaceContent(webSearch, h('p', { class: 'web-search__hint' }, 'Não achou? Digite o nome e procure também no Cifra Club.'));
+      return;
+    }
+    replaceContent(webSearch,
+      h('button', { class: 'btn btn--ghost', type: 'button', onclick: runWebSearch },
+        icon('search', 16), `Procurar “${search}” no Cifra Club`));
+  }
+
+  async function runWebSearch() {
+    webController?.abort();
+    webController = new AbortController();
+    const term = search;
+    replaceContent(webSearch, Skeleton({ count: 3, variant: 'row' }));
+    try {
+      const songs = await api.searchCifraClub(term, AbortSignal.any([signal, webController.signal]));
+      const title = h('h2', { class: 'section-title' }, 'No Cifra Club');
+      if (!songs.length) {
+        replaceContent(webSearch, title, h('p', { class: 'notice' }, `Nada encontrado para “${term}”. Tente o nome da música e do artista.`));
+        return;
+      }
+      replaceContent(webSearch, title,
+        h('p', { class: 'section-sub' }, 'Abra uma música para ver a cifra. No player, dá para salvar no repertório.'),
+        h('ul', { class: 'listen-list' }, songs.map((song, index) =>
+          h('li', { class: 'listen-row', style: { '--i': Math.min(index, 12) } },
+            h('div', { class: 'listen-row__titles' },
+              h('a', { class: 'listen-row__name', href: songPath(song.artist, song.track_name) }, song.track_name),
+              h('p', { class: 'listen-row__artist' }, song.artist))))));
+    } catch (error) {
+      if (error.name === 'AbortError') return;
+      replaceContent(webSearch, ErrorState({ error, onRetry: runWebSearch }));
+    }
+  }
+
   async function loadSpotlight(requestSignal) {
     const { source } = store.prefs;
     try {
@@ -180,9 +222,11 @@ export function TodayView({ signal }) {
   signal.addEventListener('abort', () => {
     clearTimeout(searchTimer);
     loadController?.abort();
+    webController?.abort();
   });
 
   syncControls();
+  renderWebSearch();
   loadPlaylists().then(() => {
     if (!signal.aborted) load();
   });
@@ -206,6 +250,7 @@ export function TodayView({ signal }) {
       h('div', { class: 'filters__row' },
         h('div', { class: 'field' }, h('label', { for: 'today-source' }, 'De onde'), sourceSelect),
         h('div', { class: 'field' }, h('label', { for: 'today-search' }, 'Buscar'), searchInput)),
+      webSearch,
       capoField,
     ),
     spotlight,

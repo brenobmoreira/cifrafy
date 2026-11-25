@@ -638,6 +638,11 @@ class Database:
             row = conn.execute("SELECT * FROM repertoire WHERE song_id = ?", (song_id,)).fetchone()
             return self._repertoire_entry(row)
 
+    def delete_song(self, song_id: int) -> bool:
+        """Remove a song with its sheet, aliases, links and repertoire entry. Study time stays."""
+        with self.connect() as conn:
+            return conn.execute("DELETE FROM song_index WHERE id = ?", (song_id,)).rowcount > 0
+
     def delete_repertoire_entry(self, song_id: int) -> bool:
         with self.connect() as conn:
             return conn.execute("DELETE FROM repertoire WHERE song_id = ?", (song_id,)).rowcount > 0

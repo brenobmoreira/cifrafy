@@ -54,7 +54,7 @@ export const api = {
   playlists: (signal) => request('/api/playlists', { query: { limit: 50 }, signal }),
   addPlaylist: (urlOrId) => request('/api/playlists', { method: 'POST', body: { url_or_id: urlOrId } }),
   deletePlaylist: (playlistId) => request(`/api/playlists/${id(playlistId)}`, { method: 'DELETE' }),
-  playlistTracks: (playlistId, { simplified = false, limit = 200, signal } = {}) =>
+  playlistTracks: (playlistId, { simplified = false, limit = 1000, signal } = {}) =>
     request(`/api/playlists/${id(playlistId)}/tracks`, { query: { limit, simplified }, signal }),
   syncTracks: (tracks, { simplified, avoidBarre }) =>
     request('/api/playlists/sync-selected', {
@@ -68,9 +68,11 @@ export const api = {
       query: { artist, track_name: trackName, semitones, simplified },
       signal,
     }),
+  searchCifraClub: (q, signal) => request('/api/search', { query: { q }, signal }),
   nextChords: ({ playlistId, limit = 5 } = {}, signal) =>
     request('/api/learning/next-chords', { query: { playlist_id: playlistId, limit }, signal }),
 
+  deleteSong: (songId) => request(`/api/songs/${id(songId)}`, { method: 'DELETE' }),
   repertoire: (status, signal) => request('/api/repertoire', { query: { status }, signal }),
   saveRepertoire: (songId, body) => request(`/api/repertoire/${id(songId)}`, { method: 'PUT', body }),
   removeRepertoire: (songId) => request(`/api/repertoire/${id(songId)}`, { method: 'DELETE' }),

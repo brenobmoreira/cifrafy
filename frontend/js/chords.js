@@ -181,6 +181,57 @@ export function transposeKey(key, semitones) {
   return `${names[index]}${match[2]}`;
 }
 
+const MAJOR_DEGREES = [[0, ''], [2, 'm'], [4, 'm'], [5, ''], [7, ''], [9, 'm']];
+
+// The key the sheet is written in. Sites sometimes state the recording key while the chords
+// are written for another tuning (Eb stated, chords in E), so the stated key only breaks ties.
+// `freqs` are the chords as shown, `shown` is how many semitones they were moved from the original.
+export function writtenKey(statedKey, freqs, shown = 0) {
+  const stated = /^([A-G][#b]?)(m?)/.exec(statedKey || '');
+  if (!stated || !freqs) return statedKey || null;
+  const minor = stated[2] === 'm';
+  const parsed = Object.entries(freqs)
+    .map(([name, count]) => ({ chord: parseChord(name), count }))
+    .filter((item) => item.chord);
+  if (!parsed.length) return statedKey;
+  const fit = (shift) => {
+    const tonic = (NOTE_INDEX[stated[1]] + shown + shift + (minor ? 3 : 0) + 120) % 12;
+    return parsed.reduce((sum, { chord, count }) => {
+      const quality = chord.quality === 'm' ? 'm' : chord.quality === '' ? '' : null;
+      const degree = (chord.rootIndex - tonic + 12) % 12;
+      return MAJOR_DEGREES.some(([d, q]) => d === degree && q === quality) ? sum + count : sum;
+    }, 0);
+  };
+  let best = 0;
+  let bestScore = fit(0);
+  for (const shift of [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6]) {
+    const score = fit(shift);
+    if (score > bestScore) {
+      best = shift;
+      bestScore = score;
+    }
+  }
+  return best ? transposeKey(statedKey, best) : statedKey;
+}
+
+// How to reach the user's preferred key from a song key. Minor songs aim at the relative minor.
+// `semitones` moves the shapes there; `capo` keeps the original sound while playing those shapes.
+export function preferredKeyPlan(songKey, preferredKey) {
+  const song = /^([A-G][#b]?)(m?)/.exec(songKey || '');
+  const preferred = /^([A-G][#b]?)/.exec(preferredKey || '');
+  if (!song || !preferred) return null;
+  const minor = song[2] === 'm';
+  const from = NOTE_INDEX[song[1]];
+  const target = (NOTE_INDEX[preferred[1]] + (minor ? 9 : 0)) % 12;
+  const up = (target - from + 12) % 12;
+  const capo = (12 - up) % 12;
+  return {
+    target: transposeKey(`${preferred[1]}${minor ? 'm' : ''}`, minor ? 9 : 0) || preferred[1],
+    semitones: normalizeSemitones(up),
+    capo: capo >= 1 && capo <= 7 ? capo : null,
+  };
+}
+
 export function normalizeSemitones(value) {
   const wrapped = ((value % 12) + 12) % 12;
   return wrapped > 6 ? wrapped - 12 : wrapped;

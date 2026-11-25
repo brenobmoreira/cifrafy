@@ -1,19 +1,18 @@
 import { api } from '../api.js';
-import { formatDuration, h, prefersReducedMotion, replaceContent, showDialog } from '../dom.js';
-import { normalizeSemitones, parseChord, splitToken, transposeKey } from '../chords.js';
+import { formatDuration, h, replaceContent, showDialog } from '../dom.js';
+import { normalizeSemitones, parseChord, preferredKeyPlan, splitToken, transposeKey, writtenKey } from '../chords.js';
 import { store } from '../store.js';
 import { studyTimer } from '../study.js';
 import { ChordCheckButton } from '../components/ChordCheck.js';
 import { SyncIndicator } from '../components/SyncIndicator.js';
 import { ChordDiagram } from '../components/ChordDiagram.js';
 import { StudyTimerControl } from '../components/StudyTimer.js';
-import { chordChipClass, LevelBadge, REPERTOIRE_LABELS, ScoreMeter } from '../components/SongCard.js';
+import { chordChipClass, LevelBadge, REPERTOIRE_LABELS } from '../components/SongCard.js';
 import { icon } from '../components/icons.js';
 import { ErrorState, Skeleton, toast } from '../components/states.js';
 
 const CHAR_RATIO = 0.602;
 const MIN_FONT = 11;
-const TWO_COLUMN_MIN_WIDTH = 760;
 
 // Groups a chord line with its lyric, so both are read and highlighted as one step.
 export function groupSteps(lines) {
@@ -88,20 +87,21 @@ export function PlayerView({ params, signal }) {
     simplified: store.prefs.simplified,
     data: null,
     firstLoad: true,
-    steps: [],
-    current: -1,
     playing: false,
     speed: store.prefs.scrollSpeed,
     size: store.prefs.sheetSize,
-    twoColumns: store.prefs.twoColumns,
     wake: true,
     selectedChord: null,
     maxChars: 0,
     mode: 'original',
+    // Key the sheet is written in, before any transposition. May differ from the site's stated key.
+    key: null,
     arrangement: null,
   };
   let loadController = null;
-  let playTimer = null;
+  let scrollFrame = 0;
+  let lastFrameAt = 0;
+  let scrollCarry = 0;
   let wakeLock = null;
   let holdScrollUntil = 0;
   let saveTimer = null;
@@ -111,18 +111,14 @@ export function PlayerView({ params, signal }) {
   const heroMeta = h('p', { class: 'player-meta' }, artist);
   const heroLevel = h('div', { class: 'player-level' });
   const externalSlot = h('div');
-  const statusButtons = Object.entries(REPERTOIRE_LABELS).map(([value, label]) =>
-    h('button', {
-      type: 'button', class: 'segment', dataset: { value }, 'aria-pressed': false,
-      onclick: () => setRepertoire(value),
-    }, label),
-  );
-  const repertoireGroup = h('div', {
-    class: 'segmented segmented--compact player-status',
-    role: 'group',
+  const repertoireGroup = h('select', {
+    class: 'select select--compact player-status',
     'aria-label': 'Status no repertório',
     hidden: true,
-  }, statusButtons);
+    onchange: (event) => setRepertoire(event.target.value),
+  },
+  h('option', { value: '' }, 'Fora do repertório'),
+  Object.entries(REPERTOIRE_LABELS).map(([value, label]) => h('option', { value }, label)));
   // One choice for what is on the stand: the site's two versions, or the arrangement adapted to the user.
   const currentMode = () => (state.mode === 'mine' ? 'mine' : state.simplified ? 'simple' : 'original');
   const modeButtons = [['original', 'Original'], ['simple', 'Simplificada'], ['mine', 'Minha versão']].map(([value, label]) =>
@@ -134,7 +130,7 @@ export function PlayerView({ params, signal }) {
   const arrangementPanel = h('div', {});
   const chordStrip = h('ul', { class: 'chord-strip', 'aria-label': 'Acordes da música' });
   const callouts = h('div', { class: 'player-callouts' });
-  const sheet = h('div', { class: 'sheet', onclick: onSheetClick }, Skeleton({ count: 12, variant: 'line' }));
+  const sheet = h('div', { class: 'sheet' }, Skeleton({ count: 12, variant: 'line' }));
   const railDiagram = h('div', { class: 'rail-diagram' });
   const dialogBody = h('div', { class: 'chord-dialog__body' });
   const dialog = h('dialog', {
@@ -150,16 +146,8 @@ export function PlayerView({ params, signal }) {
   const toneLabel = h('output', { class: 'stepper__value' }, '0');
   const capoLabel = h('output', { class: 'stepper__value' }, '0');
   const soundLabel = h('p', { class: 'sound-label' });
-  const playButton = h('button', { class: 'play-btn', type: 'button', 'aria-label': 'Iniciar rolagem', onclick: togglePlay }, icon('play', 26));
+  const playButton = h('button', { class: 'play-btn', type: 'button', 'aria-label': 'Rolar a cifra', onclick: togglePlay }, icon('play', 26));
   const moreButton = h('button', { class: 'icon-btn dock-more', type: 'button', 'aria-label': 'Mais ajustes', 'aria-expanded': false, onclick: toggleMore }, icon('sliders'));
-  const columnsInput = h('input', {
-    type: 'checkbox', class: 'switch__input', checked: state.twoColumns,
-    onchange: (event) => {
-      state.twoColumns = event.target.checked;
-      store.setPrefs({ twoColumns: state.twoColumns });
-      fitSheet();
-    },
-  });
   const wakeInput = h('input', {
     type: 'checkbox', class: 'switch__input', checked: state.wake,
     onchange: (event) => {
@@ -178,6 +166,9 @@ export function PlayerView({ params, signal }) {
     },
   });
 
+  const deleteButton = h('button', { class: 'btn btn--quiet btn--small btn--danger', type: 'button', hidden: true, onclick: deleteSong },
+    icon('trash', 16), 'Excluir música');
+
   const Stepper = (label, value, onMinus, onPlus) => h('div', { class: 'stepper', dataset: { pitch: label === 'Letra' ? '' : 'true' } },
     h('span', { class: 'stepper__label' }, label),
     h('div', { class: 'stepper__controls' },
@@ -189,8 +180,8 @@ export function PlayerView({ params, signal }) {
     Stepper('Capotraste', capoLabel, () => changeCapo(-1), () => changeCapo(1)),
     h('div', { class: 'control' }, h('span', { class: 'stepper__label' }, 'Velocidade'), speedInput),
     Stepper('Letra', sizeLabel, () => changeSize(-1), () => changeSize(1)),
-    h('label', { class: 'switch control-columns' }, columnsInput, h('span', { class: 'switch__track', 'aria-hidden': 'true' }), h('span', {}, 'Duas colunas')),
     h('label', { class: 'switch' }, wakeInput, h('span', { class: 'switch__track', 'aria-hidden': 'true' }), h('span', {}, 'Manter tela acesa')),
+    deleteButton,
   );
 
   const controls = h('div', { class: 'player-controls' },
@@ -206,8 +197,11 @@ export function PlayerView({ params, signal }) {
     moreButton.setAttribute('aria-expanded', String(open));
   }
 
+  const offsetText = () => (state.semitones > 0 ? `+${state.semitones}` : String(state.semitones));
+
   function updateLabels() {
-    toneLabel.textContent = state.semitones > 0 ? `+${state.semitones}` : String(state.semitones);
+    const shapes = state.key ? transposeKey(state.key, state.semitones) : null;
+    toneLabel.textContent = shapes || offsetText();
     capoLabel.textContent = state.capo ? `${state.capo}ª` : '0';
     sizeLabel.textContent = String(state.size);
     if (state.mode === 'mine') {
@@ -215,12 +209,12 @@ export function PlayerView({ params, signal }) {
       soundLabel.textContent = `${fret ? `Capotraste na ${fret}ª casa. ` : ''}Tom e capotraste ficam travados na Minha versão. Volte para Original ou Simplificada para alterar.`;
       return;
     }
-    const key = state.data?.key;
+    const key = state.key;
     const sounding = key ? transposeKey(key, state.semitones + state.capo) : null;
     const parts = [];
-    if (key) parts.push(`Original ${key}`);
-    if (sounding && sounding !== key) parts.push(`soa em ${sounding}`);
+    if (key) parts.push(`Tom original ${key}`);
     if (state.capo) parts.push(`capotraste na ${state.capo}ª casa`);
+    if (sounding && sounding !== key) parts.push(`soa em ${sounding}`);
     soundLabel.textContent = parts.join(', ');
   }
 
@@ -306,12 +300,14 @@ export function PlayerView({ params, signal }) {
   async function setRepertoire(status) {
     const data = state.data;
     if (!data?.song_id) return;
+    if ((data.repertoire?.status || '') === status) return;
     try {
-      if (data.repertoire?.status === status) {
+      if (!status) {
+        const removed = data.repertoire.status;
         const previous = data.repertoire;
         await api.removeRepertoire(data.song_id);
         data.repertoire = null;
-        toast(`Removida de ${REPERTOIRE_LABELS[status]}.`, 'info', {
+        toast(`Removida de ${REPERTOIRE_LABELS[removed]}.`, 'info', {
           label: 'Desfazer',
           onClick: async () => {
             try {
@@ -328,7 +324,20 @@ export function PlayerView({ params, signal }) {
         await api.saveRepertoire(data.song_id, body);
         data.repertoire = body;
       }
-      syncRepertoire();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+    syncRepertoire();
+  }
+
+  async function deleteSong() {
+    const data = state.data;
+    if (!data?.song_id) return;
+    if (!window.confirm(`Excluir "${data.track_name || track}" do app? A cifra salva e o status no repertório somem.`)) return;
+    try {
+      await api.deleteSong(data.song_id);
+      toast('Música excluída.', 'ok');
+      window.location.hash = '#/hoje';
     } catch (error) {
       toast(error.message, 'error');
     }
@@ -336,10 +345,9 @@ export function PlayerView({ params, signal }) {
 
   function syncRepertoire() {
     const data = state.data;
+    deleteButton.hidden = !data?.song_id;
     repertoireGroup.hidden = !data?.song_id;
-    statusButtons.forEach((button) => {
-      button.setAttribute('aria-pressed', String(button.dataset.value === data?.repertoire?.status));
-    });
+    repertoireGroup.value = data?.repertoire?.status || '';
   }
 
   function showChord(name) {
@@ -385,10 +393,35 @@ export function PlayerView({ params, signal }) {
       remaining > 0 ? h('span', {}, 'Tentando de novo em ', label) : 'Tente novamente em instantes.');
   }
 
+  function applyPlan(semitones, capo) {
+    state.semitones = normalizeSemitones(semitones);
+    state.capo = capo;
+    updateLabels();
+    scheduleSave();
+    load();
+  }
+
+  // Offer the key set in Ajustes. It replaces the capo tip: those shapes are usually open already.
+  function PreferredKeyCallout() {
+    const plan = preferredKeyPlan(state.key, store.prefs.preferredKey);
+    if (!plan || transposeKey(state.key, state.semitones) === plan.target) return null;
+    return h('div', { class: 'callout callout--key' },
+      h('p', {}, `Tom original: ${state.key}`),
+      h('div', { class: 'callout__actions' },
+        h('button', { class: 'btn btn--small btn--primary', type: 'button', onclick: () => applyPlan(plan.semitones, 0) },
+          `Mudar para ${plan.target}`),
+        plan.capo && h('button', {
+          class: 'btn btn--small btn--ghost', type: 'button', title: 'Soa igual à gravação',
+          onclick: () => applyPlan(-plan.capo, plan.capo),
+        }, `${plan.target} com capotraste na ${plan.capo}ª`)));
+  }
+
   function renderCallouts(data) {
     const items = [];
+    const keyCallout = state.key ? PreferredKeyCallout() : null;
+    if (keyCallout) items.push(keyCallout);
     const capo = data.evaluation?.capo_suggestion;
-    if (capo && !state.capo) {
+    if (capo && !state.capo && !keyCallout) {
       items.push(h('div', { class: 'callout callout--capo' },
         h('p', {}, capo.message),
         h('button', { class: 'btn btn--small btn--primary', type: 'button', onclick: () => applyCapo(capo.capo_fret) },
@@ -401,37 +434,23 @@ export function PlayerView({ params, signal }) {
     replaceContent(callouts, items);
   }
 
+  // One column only: the sheet is read top to bottom while it scrolls. Long lines shrink the font.
   function fitSheet() {
     if (!state.maxChars) return;
     const width = sheet.clientWidth - 2;
-    const gap = 40;
-    const canSplit = state.twoColumns && width >= TWO_COLUMN_MIN_WIDTH &&
-      ((width - gap) / 2) / (state.maxChars * CHAR_RATIO) >= Math.min(state.size, 13);
-    sheet.classList.toggle('sheet--two', canSplit);
-    const column = canSplit ? (width - gap) / 2 : width;
-    const fitted = column / (state.maxChars * CHAR_RATIO);
+    const fitted = width / (state.maxChars * CHAR_RATIO);
     const size = Math.max(MIN_FONT, Math.min(state.size, Math.floor(fitted * 10) / 10));
     sheet.style.setProperty('--sheet-size', `${size}px`);
   }
 
   function renderSheet(data) {
     const lines = data.sheet_lines?.length ? data.sheet_lines : fallbackLines(data.raw_chord_sheet);
-    state.steps = [];
-    const groups = groupSteps(lines).map((step) => {
-      const el = h('div', {
-        class: `sheet-step${step.blank ? ' sheet-step--blank' : ''}${step.tab ? ' sheet-step--tab' : ''}`,
-      }, step.lines.map((line) => SheetLine(line, showChord)));
-      if (!step.blank) {
-        el.dataset.step = state.steps.length;
-        state.steps.push({ el, hasLyric: step.lines.some((line) => line.type === 'lyric') });
-      }
-      return el;
-    });
+    const groups = groupSteps(lines).map((step) => h('div', {
+      class: `sheet-step${step.blank ? ' sheet-step--blank' : ''}${step.tab ? ' sheet-step--tab' : ''}`,
+    }, step.lines.map((line) => SheetLine(line, showChord))));
     state.maxChars = Math.max(1, ...lines.filter((line) => line.type !== 'tab').map((line) => line.text.length));
     replaceContent(sheet, groups);
     fitSheet();
-    if (state.current >= state.steps.length) state.current = -1;
-    if (state.current >= 0) state.steps[state.current].el.classList.add('is-current');
   }
 
   function renderUnavailable(data) {
@@ -441,7 +460,6 @@ export function PlayerView({ params, signal }) {
       error: ['Não foi possível baixar a cifra', data.error || 'Tente novamente em instantes.'],
     };
     const [title, text] = messages[data.status] || ['Cifra indisponível', data.error || 'Sem texto salvo para esta música.'];
-    state.steps = [];
     state.maxChars = 0;
     stopPlaying();
     replaceContent(sheet, h('div', { class: 'state' },
@@ -478,7 +496,7 @@ export function PlayerView({ params, signal }) {
       renderUnavailable({ ...data, status: data.status || 'error' });
       return;
     }
-    replaceContent(heroLevel, [LevelBadge(data.level_after), ScoreMeter(data.score_after)]);
+    replaceContent(heroLevel, LevelBadge(data.level_after));
     replaceContent(arrangementPanel, ArrangementSummary(data));
     replaceContent(callouts);
     renderStrip({ unique_chords: data.chords || [], evaluation: {} });
@@ -495,7 +513,7 @@ export function PlayerView({ params, signal }) {
       renderArrangement(await api.arrangement({ artist, trackName: track, simplified: state.simplified }, requestSignal));
     } catch (error) {
       if (error.name === 'AbortError') return;
-      state.steps = [];
+      stopPlaying();
       replaceContent(arrangementPanel);
       replaceContent(sheet, ErrorState({ error, onRetry: load }));
     } finally {
@@ -505,11 +523,12 @@ export function PlayerView({ params, signal }) {
 
   function renderSong(data) {
     state.data = data;
+    state.key = writtenKey(data.key, data.chord_frequencies, state.semitones);
     if (data.song_id) studyTimer.associateSong(data.song_id);
     heroTitle.textContent = data.track_name || track;
     heroMeta.textContent = data.artist || artist;
     const evaluation = data.evaluation;
-    replaceContent(heroLevel, evaluation ? [LevelBadge(evaluation.level), ScoreMeter(evaluation.score)] : null);
+    replaceContent(heroLevel, evaluation ? LevelBadge(evaluation.level) : null);
     replaceContent(externalSlot, data.url
       ? h('a', { class: 'text-link text-link--icon', href: data.url, target: '_blank', rel: 'noopener noreferrer' },
           'Ver no Cifra Club', icon('external', 15))
@@ -551,60 +570,57 @@ export function PlayerView({ params, signal }) {
       renderSong(data);
     } catch (error) {
       if (error.name === 'AbortError') return;
-      state.steps = [];
+      stopPlaying();
       replaceContent(sheet, ErrorState({ error, onRetry: load }));
     } finally {
       if (!requestSignal.aborted) sheet.classList.remove('is-loading');
     }
   }
 
-  // Auto-scroll: one highlighted step at a time, which also works across two columns.
-  const stepDuration = (step) => (7000 - (state.speed - 1) * 550) * (step.hasLyric ? 1 : 0.6);
+  // Auto-scroll: the whole sheet stays on screen and the page slides down at a steady pace.
+  const pixelsPerSecond = () => 6 + (state.speed - 1) * 5;
+  const atBottom = () => window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
 
-  function setCurrent(index) {
-    state.steps[state.current]?.el.classList.remove('is-current');
-    state.current = index;
-    const step = state.steps[index];
-    if (!step) return;
-    step.el.classList.add('is-current');
-    if (Date.now() < holdScrollUntil) return;
-    const top = step.el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.32;
-    window.scrollTo({ top: Math.max(0, top), behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
-  }
-
-  function advance() {
-    const next = state.current + 1;
-    if (next >= state.steps.length) {
-      stopPlaying();
-      return;
+  function scrollStep(now) {
+    const elapsed = lastFrameAt ? Math.min(0.1, (now - lastFrameAt) / 1000) : 0;
+    lastFrameAt = now;
+    if (Date.now() >= holdScrollUntil) {
+      scrollCarry += pixelsPerSecond() * elapsed;
+      const whole = Math.floor(scrollCarry);
+      if (whole >= 1) {
+        window.scrollBy(0, whole);
+        scrollCarry -= whole;
+      }
+      if (atBottom()) {
+        stopPlaying();
+        return;
+      }
     }
-    setCurrent(next);
-    playTimer = setTimeout(advance, stepDuration(state.steps[next]));
-  }
-
-  function firstVisibleStep() {
-    const index = state.steps.findIndex(({ el }) => el.getBoundingClientRect().bottom > 120);
-    return Math.max(0, index);
+    scrollFrame = requestAnimationFrame(scrollStep);
   }
 
   function startPlaying() {
-    if (!state.steps.length) return;
+    if (!state.maxChars) return;
+    // Starting above the sheet would spend the first seconds on the header.
+    const sheetTop = sheet.getBoundingClientRect().top;
+    if (sheetTop > window.innerHeight * 0.35) window.scrollBy(0, sheetTop - 16);
     state.playing = true;
     replaceContent(playButton, icon('pause', 26));
     playButton.setAttribute('aria-label', 'Pausar rolagem');
     holdScrollUntil = 0;
-    const start = state.current >= 0 && state.current < state.steps.length - 1 ? state.current : firstVisibleStep();
-    setCurrent(start);
-    clearTimeout(playTimer);
-    playTimer = setTimeout(advance, stepDuration(state.steps[start]));
+    lastFrameAt = 0;
+    scrollCarry = 0;
+    cancelAnimationFrame(scrollFrame);
+    scrollFrame = requestAnimationFrame(scrollStep);
     if (state.wake) requestWake();
   }
 
   function stopPlaying() {
     state.playing = false;
-    clearTimeout(playTimer);
+    cancelAnimationFrame(scrollFrame);
+    scrollFrame = 0;
     replaceContent(playButton, icon('play', 26));
-    playButton.setAttribute('aria-label', 'Iniciar rolagem');
+    playButton.setAttribute('aria-label', 'Rolar a cifra');
   }
 
   function togglePlay() {
@@ -612,18 +628,9 @@ export function PlayerView({ params, signal }) {
     else startPlaying();
   }
 
-  function onSheetClick(event) {
-    const stepEl = event.target.closest?.('[data-step]');
-    if (!stepEl || !state.playing) return;
-    clearTimeout(playTimer);
-    const index = Number(stepEl.dataset.step);
-    holdScrollUntil = 0;
-    setCurrent(index);
-    playTimer = setTimeout(advance, stepDuration(state.steps[index]));
-  }
-
+  // Scrolling by hand pauses the slide for a moment, then it continues from the new spot.
   const holdScroll = () => {
-    if (state.playing) holdScrollUntil = Date.now() + 3000;
+    if (state.playing) holdScrollUntil = Date.now() + 2000;
   };
 
   async function requestWake() {

@@ -7,6 +7,15 @@ import { benefitText } from '../components/NextChord.js';
 import { icon } from '../components/icons.js';
 import { EmptyState, ErrorState, Skeleton, toast } from '../components/states.js';
 
+// Shows the chord shape on hover or keyboard focus. The diagram is built on first use.
+function ChordPeek(chord, trigger) {
+  const card = h('div', { class: 'peek__card', 'aria-hidden': 'true' });
+  const fill = () => {
+    if (!card.firstChild) card.append(ChordDiagram(chord, { size: 'md' }));
+  };
+  return h('span', { class: 'peek', onmouseenter: fill, onfocusin: fill }, trigger, card);
+}
+
 export function ChordsView({ signal }) {
   const knownList = h('ul', { class: 'known-list', 'aria-label': 'Acordes que você já toca' });
   const quickAdd = h('div', { class: 'quick-add' });
@@ -81,11 +90,11 @@ export function ChordsView({ signal }) {
       if (!missing.length) return null;
       return h('div', { class: 'quick-add__group' },
         h('h3', { class: 'quick-add__title' }, group),
-        h('div', { class: 'quick-add__chips' }, missing.map((chord) =>
+        h('div', { class: 'quick-add__chips' }, missing.map((chord) => ChordPeek(chord,
           h('button', {
             class: 'chip chip--add', type: 'button', 'aria-label': `Adicionar ${chord}`,
             onclick: () => addKnown(chord),
-          }, icon('plus', 13), chord))));
+          }, icon('plus', 13), chord)))));
     }));
   }
 

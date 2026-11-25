@@ -142,6 +142,33 @@ async def list_changes(
     return {"changes": changes[:limit], "songs_without_sequence": without_sequence}
 
 
+WARMUP_BPM = 60
+WARMUP_BLOCK: dict[str, Any] = {
+    "kind": "warmup",
+    "title": "Aquecimento dos dedos",
+    "instruction": "Devagar e com som limpo. Velocidade vem depois. Se doer, pare.",
+    "bpm": WARMUP_BPM,
+    "exercises": [
+        {
+            "name": "Soltar as mãos",
+            "text": "Abra e feche as mãos algumas vezes e gire os punhos. Sem forçar o alongamento.",
+        },
+        {
+            "name": "Cromático 1-2-3-4",
+            "text": "Na 6ª corda, casas 1 a 4, um dedo por casa. Desça corda por corda até a 1ª e volte. Uma nota por clique.",
+        },
+        {
+            "name": "Escada",
+            "text": "Repita o 1-2-3-4, subindo uma casa a cada corda. Deixe cada dedo apoiado até precisar dele.",
+        },
+        {
+            "name": "Mão direita",
+            "text": "Cordas soltas, batida para baixo e para cima no clique. Mantenha o braço solto.",
+        },
+    ],
+}
+
+
 def _allocate_minutes(weights: list[float], minutes: int) -> list[int]:
     """Split the minutes by weight, at least 1 per block, summing exactly to the total."""
     extra = minutes - len(weights)
@@ -192,14 +219,15 @@ async def build_session(minutes: int = 20, playlist_id: str | None = None) -> di
     changes = (await list_changes(playlist_id, None, 1))["changes"]
     trail = (await learning_trail(playlist_id, 1))["steps"]
 
-    blocks: list[tuple[float, dict[str, Any]]] = []
+    # The warmup is the same every day and needs no songs, so every session starts with it.
+    blocks: list[tuple[float, dict[str, Any]]] = [(0.15, WARMUP_BLOCK)]
     if changes:
         change = changes[0]
         blocks.append((
-            0.2,
+            0.15,
             {
-                "kind": "warmup",
-                "title": f"Aquecimento: {change['from']} e {change['to']}",
+                "kind": "change",
+                "title": f"Troca do dia: {change['from']} e {change['to']}",
                 "change": {
                     "from": change["from"],
                     "to": change["to"],
@@ -227,7 +255,7 @@ async def build_session(minutes: int = 20, playlist_id: str | None = None) -> di
     active = _pick_active_song(repertoire, scope, used)
     if active:
         blocks.append((
-            0.4,
+            0.35,
             {
                 "kind": "in_progress",
                 "title": f"Em andamento: {active['track_name']}",

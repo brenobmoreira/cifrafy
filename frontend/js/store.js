@@ -8,8 +8,9 @@ const DEFAULT_PREFS = {
   withCapo: true,
   simplified: false,
   sheetSize: 15,
-  twoColumns: true,
   scrollSpeed: 5,
+  // Key whose shapes the user likes to play in. Minor songs use its relative minor.
+  preferredKey: 'G',
 };
 
 function loadPrefs() {

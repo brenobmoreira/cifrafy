@@ -1,6 +1,5 @@
 import { api } from '../api.js';
 import { h, plural, replaceContent } from '../dom.js';
-import { songPath } from '../router.js';
 import { store } from '../store.js';
 import { openChangeDrill, formatRate } from '../components/ChangeDrill.js';
 import { ChordCheckButton } from '../components/ChordCheck.js';
@@ -10,19 +9,12 @@ import { PracticeTabs, ShowMore } from '../components/PracticeTabs.js';
 import { icon } from '../components/icons.js';
 import { EmptyState, ErrorState, LinkButton, Skeleton, toast } from '../components/states.js';
 
-function TrailProgress(current, after, total) {
-  const percent = (value) => (total ? Math.round((value / total) * 100) : 0);
-  return h('div', { class: 'trail-bar', role: 'img', 'aria-label': `De ${current} para ${after} de ${total} músicas fáceis` },
-    h('span', { class: 'trail-bar__after', style: { width: `${percent(after)}%` } }),
-    h('span', { class: 'trail-bar__now', style: { width: `${percent(current)}%` } }));
-}
-
 function stepBenefit(step) {
   if (step.songs_unlocked_easy > 0) return `Libera ${plural(step.songs_unlocked_easy, 'música')} no Fácil`;
   return `Facilita ${plural(step.songs_improved, 'música')}`;
 }
 
-function TrailStep(step, index, data, onLearn) {
+function TrailStep(step, index, onLearn) {
   const isNext = index === 0;
   return h('li', { class: `trail-step${isNext ? ' is-next' : ''}`, style: { '--i': index } },
     h('span', { class: 'trail-step__node', 'aria-hidden': 'true' }, step.step),
@@ -33,13 +25,6 @@ function TrailStep(step, index, data, onLearn) {
         h('h3', { class: 'trail-step__chord' }, step.chord,
           step.is_barre && h('span', { class: 'tag' }, 'pestana')),
         h('p', { class: 'trail-step__benefit' }, stepBenefit(step)),
-        TrailProgress(index === 0 ? data.current_easy : data.steps[index - 1].total_easy_after, step.total_easy_after, data.total_songs),
-        h('p', { class: 'trail-step__total' },
-          `Músicas fáceis: ${index === 0 ? data.current_easy : data.steps[index - 1].total_easy_after} → ${step.total_easy_after} de ${data.total_songs}`),
-        step.examples?.length > 0 && h('p', { class: 'trail-step__songs-label' }, 'Aparece em'),
-        step.examples?.length > 0 && h('ul', { class: 'trail-step__songs', 'aria-label': `Músicas com ${step.chord}` },
-          step.examples.slice(0, 3).map((song) =>
-            h('li', {}, h('a', { class: 'text-link', href: songPath(song.artist, song.track_name) }, song.track_name)))),
         h('div', { class: 'rank__actions' },
           isNext && h('button', {
             class: 'btn btn--primary btn--small', type: 'button', onclick: () => onLearn(step.chord),
@@ -57,9 +42,7 @@ function ChangeRow(change, index, onTrain) {
       h('span', { class: 'change__link', 'aria-hidden': 'true' }),
       h('span', { class: 'change__chord' }, change.to)),
     h('div', { class: 'change__body' },
-      h('p', { class: 'change__meta' },
-        `${plural(change.occurrences, 'vez', 'vezes')} em ${plural(change.songs, 'música')}`,
-        change.involves_unknown && h('span', { class: 'tag' }, 'acorde novo')),
+      change.involves_unknown && h('p', { class: 'change__meta' }, h('span', { class: 'tag' }, 'acorde novo')),
       h('div', { class: 'change__meter', role: 'img', 'aria-label': `Recorde ${formatRate(change.best_per_minute)} de ${target} trocas por minuto` },
         h('span', { style: { width: `${progress}%` } })),
       h('p', { class: 'change__rate' },
@@ -114,7 +97,7 @@ export function PracticeView({ signal }) {
         }));
         return;
       }
-      const steps = data.steps.map((step, index) => TrailStep(step, index, data, learn));
+      const steps = data.steps.map((step, index) => TrailStep(step, index, learn));
       replaceContent(trail, h('ol', { class: 'trail' }, steps), ShowMore(steps, 2, 'Ver próximos acordes'));
     } catch (error) {
       if (error.name !== 'AbortError') replaceContent(trail, ErrorState({ error, onRetry: loadTrail }));
@@ -167,16 +150,14 @@ export function PracticeView({ signal }) {
         source)),
     h('div', { class: 'panel' },
       h('h2', { class: 'section-title' }, 'Sessão pronta'),
-      h('p', { class: 'section-sub' }, 'Diga quanto tempo você tem. O app monta aquecimento, músicas e um acorde novo.'),
       PracticeSession({ signal, getPlaylistId: () => playlistId })),
-    h('h2', { class: 'practice-divider' }, 'Ou treine por partes'),
-    h('div', { class: 'practice-layout' },
-      h('div', { class: 'panel panel--plain' },
-        h('h2', { class: 'section-title' }, 'Sua trilha'),
-        h('p', { class: 'section-sub' }, 'A ordem de acordes que mais libera músicas que você já ouve.'),
-        trail),
-      h('div', { class: 'panel' },
-        h('h2', { class: 'section-title' }, 'Trocas para treinar'),
-        h('p', { class: 'section-sub' }, 'As passagens que mais aparecem nas músicas que você quer tocar.'),
-        changes)));
+    h('details', { class: 'practice-parts' },
+      h('summary', { class: 'practice-divider' }, 'Ou treine por partes'),
+      h('div', { class: 'practice-layout' },
+        h('div', { class: 'panel panel--plain' },
+          h('h2', { class: 'section-title' }, 'Próximos acordes'),
+          trail),
+        h('div', { class: 'panel' },
+          h('h2', { class: 'section-title' }, 'Trocas de acordes'),
+          changes))));
 }

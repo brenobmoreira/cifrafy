@@ -400,3 +400,36 @@ def test_spotify_failure_falls_back_to_embed(monkeypatch):
     monkeypatch.setattr(spotify, "get_valid_access_token", token)
     monkeypatch.setattr(spotify, "_fetch_public_playlist_via_embed", embed)
     assert asyncio.run(spotify.fetch_playlist_tracks("abc"))[0]["name"] == "Embed"
+
+
+def test_free_search_lists_only_songs(site):
+    docs = (
+        '[{"d": "legiao-urbana", "a": "Legião Urbana"},'
+        ' {"d": "legiao-urbana", "u": "tempo-perdido", "a": "Legião Urbana", "m": "Tempo Perdido"},'
+        ' {"d": "legiao-urbana", "u": "tempo-perdido", "a": "Legião Urbana", "m": "Tempo Perdido"},'
+        ' {"d": "../x", "u": "y", "a": "X", "m": "Y"}]'
+    )
+    site.routes["solr"] = httpx.Response(200, text="suggest_callback({\"response\":{\"docs\":%s}})" % docs)
+    client = TestClient(api.app)
+    response = client.get("/api/search", params={"q": "tempo perdido"})
+    assert response.status_code == 200
+    assert response.json() == [{"artist": "Legião Urbana", "track_name": "Tempo Perdido"}]
+
+
+def test_free_search_reports_cooldown(site):
+    site.routes["solr"] = httpx.Response(429, headers={"Retry-After": "60"})
+    client = TestClient(api.app)
+    response = client.get("/api/search", params={"q": "tempo perdido"})
+    assert response.status_code == 429
+    assert client.get("/api/search", params={"q": "x"}).status_code == 422
+
+
+def test_delete_song_removes_sheet_and_repertoire():
+    song_id = index_song("apagar", freqs={"C": 2, "G": 1}, sheet="C G\nletra")
+    db.set_repertoire_entry(song_id, "practicing")
+    client = TestClient(api.app)
+    assert client.delete(f"/api/songs/{song_id}").json() == {"status": "deleted", "song_id": song_id}
+    assert db.get_repertoire_entry(song_id) is None
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM chord_sheets_cache WHERE song_id = ?", (song_id,)).fetchone()[0] == 0
+    assert client.delete(f"/api/songs/{song_id}").status_code == 404

@@ -171,13 +171,24 @@ class CifraClubLimiter:
 
 
 cifraclub_limiter = CifraClubLimiter(
-    min_interval=float(os.getenv("CIFRACLUB_MIN_INTERVAL_SECONDS", "2.0")),
+    min_interval=float(os.getenv("CIFRACLUB_MIN_INTERVAL_SECONDS", "3.0")),
     default_cooldown=float(os.getenv("CIFRACLUB_COOLDOWN_SECONDS", "900")),
 )
 
 
 def _build_client() -> httpx.AsyncClient:
-    headers = {"User-Agent": USER_AGENT, "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8"}
+    # The CDN answers 403 to requests without the headers a browser sends on navigation.
+    # The limiter keeps the volume low: one request at a time, spaced, and a pause after any 403/429.
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+    }
     return httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=10.0)
 
 
@@ -357,14 +368,10 @@ def parse_cifraclub_html(html: str, url: str) -> dict[str, Any] | None:
     }
 
 
-async def _search_cifraclub_solr(
-    client: httpx.AsyncClient, artists: list[str], track_name: str
-) -> tuple[str, str] | None:
-    """Search the autocomplete index, accepting only a result that matches artist and title."""
+async def _solr_docs(client: httpx.AsyncClient, query: str) -> list[dict[str, Any]]:
+    """Raw results of the Cifra Club autocomplete index."""
     try:
-        resp = await cifraclub_limiter.get(
-            client, SOLR_URL, params={"q": f"{artists[0]} {track_name}".strip()}, timeout=6.0
-        )
+        resp = await cifraclub_limiter.get(client, SOLR_URL, params={"q": query}, timeout=6.0)
     except httpx.HTTPError as exc:
         raise CifraClubUnavailable(f"Falha na busca do Cifra Club: {exc}") from exc
     if resp.status_code != 200:
@@ -377,7 +384,43 @@ async def _search_cifraclub_solr(
         docs = json.loads(text).get("response", {}).get("docs", [])
     except (ValueError, AttributeError) as exc:
         raise CifraClubUnavailable("Resposta inesperada da busca do Cifra Club.") from exc
+    return [doc for doc in docs if isinstance(doc, dict)] if isinstance(docs, list) else []
 
+
+async def search_songs(query: str, limit: int = 10) -> list[dict[str, str]]:
+    """Songs on Cifra Club matching free text. Artist-only results are left out.
+
+    Raises CifraClubRateLimited or CifraClubUnavailable.
+    """
+    query = " ".join(query.split())
+    if not query:
+        return []
+    async with _build_client() as client:
+        docs = await _solr_docs(client, query)
+
+    results: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for doc in docs:
+        artist_slug = str(doc.get("d") or doc.get("dns") or "").strip("/")
+        track_slug = str(doc.get("u") or doc.get("url") or "").strip("/")
+        artist = str(doc.get("a") or "").strip()
+        track_name = str(doc.get("m") or "").strip()
+        if not (_SLUG.fullmatch(artist_slug) and _SLUG.fullmatch(track_slug) and artist and track_name):
+            continue
+        if (artist_slug, track_slug) in seen:
+            continue
+        seen.add((artist_slug, track_slug))
+        results.append({"artist": artist, "track_name": track_name})
+        if len(results) >= limit:
+            break
+    return results
+
+
+async def _search_cifraclub_solr(
+    client: httpx.AsyncClient, artists: list[str], track_name: str
+) -> tuple[str, str] | None:
+    """Search the autocomplete index, accepting only a result that matches artist and title."""
+    docs = await _solr_docs(client, f"{artists[0]} {track_name}".strip())
     wanted_artists = [slugify(name) for name in artists]
     wanted_title = slugify(track_name)
     best: tuple[float, str, str] | None = None

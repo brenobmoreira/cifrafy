@@ -196,3 +196,19 @@ a.listen-row__name:hover { color: var(--brass-bright); }
 .page-tabs__tab:focus-visible { outline: 2px solid var(--brass-bright); outline-offset: 2px; }
 .practice-divider { margin: var(--space-5) 0 var(--space-3); color: var(--ivory-muted); font-size: 0.8125rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .show-more { margin-top: var(--space-3); }
+
+/* Daily warmup block */
+.warmup { display: grid; gap: var(--space-3); width: 100%; max-width: 520px; text-align: left; }
+.warmup__steps { display: grid; gap: var(--space-2); padding-left: 1.4em; margin: 0; }
+.warmup__steps li { color: var(--ivory-soft); }
+.warmup__steps strong { display: block; color: var(--ivory); }
+.warmup__click { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--space-2) var(--space-4); }
+.warmup__bpm { min-width: 7ch; }
+.warmup__tip { color: var(--ivory-muted); font-size: 0.8125rem; text-align: center; }
+summary.practice-divider { display: flex; align-items: center; gap: var(--space-2); min-height: var(--touch); cursor: pointer; list-style: none; }
+summary.practice-divider::-webkit-details-marker { display: none; }
+summary.practice-divider::before { content: '+'; display: grid; place-items: center; width: 22px; height: 22px; color: var(--brass-bright); border: 1px solid var(--brass-deep); border-radius: 50%; font-size: 0.875rem; letter-spacing: 0; }
+.practice-parts[open] > summary.practice-divider::before { content: '−'; }
+summary.practice-divider:hover { color: var(--ivory); }
+summary.practice-divider:focus-visible { outline: 2px solid var(--brass-bright); outline-offset: 2px; }
+.session-block__select { max-width: 100%; margin-top: 2px; }

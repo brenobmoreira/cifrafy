@@ -13,6 +13,7 @@ import { PlaylistDetailView, PlaylistsView } from './views/playlists.js';
 import { PracticeView } from './views/practice.js';
 import { ProgressView } from './views/progress.js';
 import { RepertoireView } from './views/repertoire.js';
+import { SettingsView } from './views/settings.js';
 import { TodayView } from './views/today.js';
 
 const NAV = [
@@ -32,6 +33,7 @@ const routes = [
   { path: '/tocar/:artist/:track', nav: 'tocar', title: 'Tocar', view: PlayerView },
   { path: '/repertorio', nav: 'repertorio', title: 'Repertório', view: RepertoireView },
   { path: '/acordes', nav: 'acordes', title: 'Acordes', view: ChordsView },
+  { path: '/ajustes', nav: 'ajustes', title: 'Ajustes', view: SettingsView },
 ];
 
 function Brand() {
@@ -71,7 +73,8 @@ function start() {
     h('header', { class: 'app-header' },
       Brand(),
       h('nav', { class: 'nav', 'aria-label': 'Principal' }, navLinks),
-      h('div', { class: 'header-tools' }, SyncIndicator(), StudyTimerControl(), indexed)),
+      h('div', { class: 'header-tools' }, SyncIndicator(), StudyTimerControl(), indexed,
+        h('a', { class: 'icon-btn', href: '#/ajustes', 'aria-label': 'Ajustes', title: 'Ajustes' }, icon('settings', 20)))),
     outlet,
   );
 
